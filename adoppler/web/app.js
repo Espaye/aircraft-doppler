@@ -421,8 +421,8 @@ async function saveSettings(ev) {
   const audio = f.audio_file.files[0], adsbFile = f.adsb_file.files[0];
   if (s.adsb_source === 'file' && !adsbFile && !(state.c && state.c.settings.adsb_file && !f.dataset.new)) return fail('Choose the ADS-B file.');
   $('#btn-save').disabled = true;
+  let c;
   try {
-    let c;
     if (f.dataset.new) {
       if (s.adsb_source === 'file') s.adsb_source = 'auto';            // set by the upload below
       c = await api('api/cases', { method: 'POST', body: { ...s, audio: audio.name } });
@@ -434,7 +434,13 @@ async function saveSettings(ev) {
     if (adsbFile) await upload(c.id, 'adsb', adsbFile, fail);
     $('#dlg-settings').close();
     await loadCases(c.id);
-  } catch (e) { fail(e.message); } finally { $('#btn-save').disabled = false; }
+  } catch (e) {
+    if (c && f.dataset.new) {           // the case exists now (an upload failed): saving again edits it
+      await loadCases(c.id).catch(() => {});
+      if (state.id === c.id) { f.dataset.new = ''; $('#settings-title').textContent = 'Case settings'; }
+    }
+    fail(e.message);
+  } finally { $('#btn-save').disabled = false; }
 }
 
 function upload(id, kind, file, report) {

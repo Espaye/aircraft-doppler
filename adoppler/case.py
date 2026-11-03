@@ -58,6 +58,20 @@ def slug(name):
     return s[:60] or 'case'
 
 
+def audio_info(path):
+    import soundfile as sf
+    path = Path(path)
+    if not path.exists():
+        raise CaseError(f'audio file {path} not found')
+    try:
+        i = sf.info(str(path))
+    except Exception as e:
+        raise CaseError(f'cannot read {path.name} ({e}); convert it to WAV or FLAC, e.g. '
+                        f'ffmpeg -i input.m4a audio.flac')
+    return {'samplerate': i.samplerate, 'channels': i.channels, 'frames': i.frames,
+            'duration_s': i.frames / i.samplerate, 'format': i.format}
+
+
 class Case:
     def __init__(self, path):
         self.dir = Path(path).resolve()
@@ -144,16 +158,7 @@ class Case:
     validation_path = property(lambda self: self.match_dir / 'validation.json')
 
     def audio_info(self):
-        import soundfile as sf
-        if not self.audio_path.exists():
-            raise CaseError(f'audio file {self.audio_path} not found')
-        try:
-            i = sf.info(str(self.audio_path))
-        except Exception as e:
-            raise CaseError(f'cannot read {self.audio_path.name} ({e}); convert it to WAV or FLAC, e.g. '
-                            f'ffmpeg -i input.m4a audio.flac')
-        return {'samplerate': i.samplerate, 'channels': i.channels, 'frames': i.frames,
-                'duration_s': i.frames / i.samplerate, 'format': i.format}
+        return audio_info(self.audio_path)
 
     @property
     def window(self):

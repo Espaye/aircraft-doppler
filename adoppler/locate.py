@@ -109,12 +109,14 @@ def run(case, ids=None, min_score=None, step=None, force=False, workers=None, n_
     out_dir = case.match_dir; out_dir.mkdir(exist_ok=True)
     res_p = case.result_path
     if res_p.exists() and not force:
+        log(f'stored prediction present ({res_p.name}); use force to recompute')
         return json.loads(res_p.read_text())
     if not case.events_path.exists():
         raise MatchError('no detected events yet: run the analysis first')
     if not case.tracks_path.exists():
         raise MatchError('no ADS-B tracks yet: fetch flight data first')
     ev_json = json.loads(case.events_path.read_text())
+    ev_json['wav_t0_utc_unix'] = case.t0               # event times are relative: a corrected start time applies
     events = match.load_events(ev_json, ids=ids, min_score=min_score, manual_dir=case.manual_dir)
     if ids is None:
         events = [e for e in events if e['manual'] or (e['fit'] and e['fit']['t_cpa_sigma'] < 30)]

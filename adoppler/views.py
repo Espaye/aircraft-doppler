@@ -77,9 +77,9 @@ def events(case, max_pts=400):
         sel = ms.get('events')
         out.append({'id': e['id'], 'label': e['label'], 'score': e['score'], 'reasons': e.get('reasons', []),
                     't_start': e['t_start'], 't_end': e['t_end'], 'fit': fit, 'tracks': trs,
-                    'used': (e['id'] in sel) if sel else usable,
+                    'used': (e['id'] in sel) if sel is not None else usable,
                     'manual': (case.manual_dir / f"{e['id']}.json").exists()})
-    return {'t0_utc': d['wav_t0_utc_unix'], 'counts': d.get('counts'), 'events': out}
+    return {'t0_utc': case.t0, 'counts': d.get('counts'), 'events': out}
 
 
 def flights(case, max_pts=300):

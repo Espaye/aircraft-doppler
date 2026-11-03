@@ -17,19 +17,26 @@ def _center(s):
         raise argparse.ArgumentTypeError('use LAT,LON in decimal degrees, e.g. 52.08,5.83')
 
 
+def _in_case(p, d):
+    """A path as stored in case.json: relative to the case folder d when inside it, else absolute."""
+    p = Path(p).resolve()
+    return p.relative_to(d) if p.is_relative_to(d) else p
+
+
 def cmd_new(a):
-    audio = Path(a.audio).resolve()
     d = Path(a.case).resolve()
-    rel = audio.relative_to(d) if audio.is_relative_to(d) else audio
-    c = pipeline.new_case(d, rel, a.start, a.center, a.radius, name=a.name, ground_temp_c=a.temp, terrain=a.terrain,
-                          ground_elevation_m=a.elevation, adsb_source='file' if a.adsb_file else None,
-                          adsb_file=a.adsb_file)
+    c = pipeline.new_case(d, _in_case(a.audio, d), a.start, a.center, a.radius, name=a.name, ground_temp_c=a.temp,
+                          terrain=a.terrain, ground_elevation_m=a.elevation,
+                          adsb_source='file' if a.adsb_file else None,
+                          adsb_file=str(_in_case(a.adsb_file, d)) if a.adsb_file else None)
     info = c.audio_info()
     print(f"created {c.dir / case_mod.CASE_FILE} ({info['duration_s'] / 60:.1f} min of audio)")
 
 
 def cmd_synth(a):
     from . import synth
+    if (Path(a.case) / case_mod.CASE_FILE).exists():
+        raise case_mod.CaseError(f'{a.case} already holds a case; choose a new folder')
     synth.make_case(a.case, a.scene, seed=a.seed)
 
 
@@ -91,7 +98,11 @@ def cmd_serve(a):
 
 def cmd_export(a):
     from . import export
-    export.export_cases([case_mod.Case(x) for x in a.cases], Path(a.out), audio=not a.no_audio, allow_real=a.allow_real)
+    try:
+        export.export_cases([case_mod.Case(x) for x in a.cases], Path(a.out), audio=not a.no_audio,
+                            allow_real=a.allow_real)
+    except ValueError as e:                                # refused: not synthetic, no result yet, no plotly
+        raise case_mod.CaseError(str(e))
 
 
 def main(argv=None):

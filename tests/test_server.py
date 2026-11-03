@@ -69,3 +69,12 @@ def test_create_case_upload_and_errors(srv):
     st, _, b = req(srv, 'POST', f'/api/cases/{cid}/run', {'stage': 'analyse'}, W)
     assert st == 202
     assert req(srv, 'POST', f'/api/cases/{cid}/run', {'stage': 'rm -rf'}, W)[0] == 400
+
+
+def test_uploaded_flight_data_replaces_fetched_tracks(srv, tmp_path):
+    st, _, b = req(srv, 'POST', '/api/cases', {'name': 'f', 'audio': 'rec.wav', 'search_center': [52, 5],
+                                                'audio_start_utc': '2026-06-01T12:00:00Z'}, W)
+    d = tmp_path / 'cases' / json.loads(b)['id']
+    (d / 'adsb').mkdir(); (d / 'adsb' / 'tracks.json').write_text('[]')
+    assert req(srv, 'PUT', f'/api/cases/{d.name}/upload?kind=adsb&name=f.csv', b'icao24,time,lat,lon,alt_m\n', W)[0] == 200
+    assert not (d / 'adsb' / 'tracks.json').exists()

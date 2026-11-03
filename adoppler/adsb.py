@@ -184,7 +184,13 @@ def stream_archive(day, t_from, t_to, out_dir, lat, lon, radius_m, instance='pro
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     done = out_dir / '_complete.json'
     if done.exists():
-        return json.loads(done.read_text())
+        info = json.loads(done.read_text())
+        a, b = info.get('window', (t_from, t_to))
+        clat, clon, r = info.get('area', (lat, lon, radius_m))
+        if a <= t_from and t_to <= b and (clat, clon) == (lat, lon) and r >= radius_m:
+            return info
+        for f in out_dir.glob('*.json'):                   # kept for another window or area: stream again
+            f.unlink()
     tag = release_tag(day, instance)
     urls = release_assets(tag, day)
     if not urls:
@@ -216,7 +222,7 @@ def stream_archive(day, t_from, t_to, out_dir, lat, lon, radius_m, instance='pro
             if log and seen % 20000 == 0:
                 log(f'  {seen} traces scanned, {kept} kept, {src.bytes / 1e9:.2f} GB, {time.time() - t0:.0f} s')
     info = {'tag': tag, 'urls': urls, 'scanned': seen, 'kept': kept, 'bytes': src.bytes,
-            'window': [t_from, t_to], 'seconds': time.time() - t0}
+            'window': [t_from, t_to], 'area': [lat, lon, radius_m], 'seconds': time.time() - t0}
     done.write_text(json.dumps(info))
     return info
 

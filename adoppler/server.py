@@ -332,6 +332,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tmp.unlink(missing_ok=True)
             raise ApiError(400, 'upload incomplete')
         tmp.replace(c.dir / name)
+        if kind == 'adsb':
+            c.tracks_path.unlink(missing_ok=True)          # derived from the previous flight data
         ch = {'audio': name} if kind == 'audio' else {'adsb_source': 'file', 'adsb_file': name}
         c = case_mod.update(c, ch)
         s = c.summary()

@@ -1,4 +1,4 @@
-import json
+import datetime as dt, json
 
 import numpy as np
 import pytest
@@ -50,3 +50,15 @@ def test_tracks_json_round_trip(tmp_path):
     back = adsb.load_tracks(tmp_path / 'tracks.json')[0]
     assert back.icao24 == 'abc' and np.allclose(back.alt_msl_m, tr.alt_msl_m) and back.meta == {'k': 1}
     json.loads((tmp_path / 'tracks.json').read_text())
+
+
+def test_archive_cache_only_serves_its_own_window_and_area(tmp_path, monkeypatch):
+    info = {'window': [0, 100], 'area': [52.0, 5.0, 60000.0]}
+    (tmp_path / '_complete.json').write_text(json.dumps(info))
+    (tmp_path / 'abc123.json').write_text('{}')
+    day = dt.date(2026, 6, 1)
+    assert adsb.stream_archive(day, 10, 90, tmp_path, 52.0, 5.0, 50000.0) == info
+    monkeypatch.setattr(adsb, 'release_assets', lambda *a: None)
+    with pytest.raises(RuntimeError, match='not published'):          # a later window: streamed again
+        adsb.stream_archive(day, 10, 200, tmp_path, 52.0, 5.0, 50000.0)
+    assert not (tmp_path / 'abc123.json').exists()

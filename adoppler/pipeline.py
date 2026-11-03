@@ -56,21 +56,35 @@ def _days(t_from, t_to):
         d += dt.timedelta(days=1)
 
 
+def _covers(source_json, t_from, t_to, lat, lon, radius):
+    """Whether the stored flight data was fetched for this window and area (source.json written by fetch_adsb)."""
+    if not source_json.exists():
+        return True
+    s = json.loads(source_json.read_text())
+    a, b = s.get('window_utc', (t_from, t_to))
+    return (a <= t_from and t_to <= b and s.get('radius_m', radius) >= radius
+            and s.get('center', [lat, lon]) == [lat, lon])
+
+
 def fetch_adsb(case, force=False, source=None, log=print):
     """Tracks for the recording window +/- 10 min within aircraft_radius_km of the search centre."""
     tp = case.tracks_path
-    if tp.exists() and not force:
-        log(f'ADS-B tracks already present ({tp.name}); use force to fetch again')
-        return adsb.load_tracks(tp)
-    src = source or case.s['adsb_source']
     t_from, t_to = case.window
     t_from -= 600; t_to += 600
     lat, lon = case.center
     radius = case.aircraft_radius_m
+    if tp.exists() and not force:
+        if _covers(case.adsb_dir / 'source.json', t_from, t_to, lat, lon, radius):
+            log(f'ADS-B tracks already present ({tp.name}); use force to fetch again')
+            return adsb.load_tracks(tp)
+        log('the recording time or search area changed since the flight data was fetched; fetching again')
+    src = source or case.s['adsb_source']
     geoid_n = case.geoid_n()
     case.adsb_dir.mkdir(parents=True, exist_ok=True)
     tracks, info = None, {}
     if src == 'file':
+        if not case.s.get('adsb_file'):
+            raise StageError('adsb_source "file" needs adsb_file (the flight data file) in the case settings')
         p = Path(case.s['adsb_file'])
         p = p if p.is_absolute() else case.dir / p
         if not p.exists():
@@ -123,7 +137,7 @@ def fetch_adsb(case, force=False, source=None, log=print):
         raise StageError('no aircraft tracks in the recording window and area')
     adsb.save_tracks(tracks, tp)
     (case.adsb_dir / 'source.json').write_text(json.dumps(
-        {**info, 'n_tracks': len(tracks), 'window_utc': [t_from, t_to], 'radius_m': radius,
+        {**info, 'n_tracks': len(tracks), 'window_utc': [t_from, t_to], 'center': [lat, lon], 'radius_m': radius,
          'retrieved_utc': dt.datetime.now(dt.timezone.utc).isoformat()}, indent=1, default=str))
     log(f'{len(tracks)} aircraft tracks saved')
     return tracks
@@ -164,6 +178,8 @@ def run_all(case, force=False, log=print):
 
 
 def new_case(path, audio, start_utc, center, radius_km=None, **settings):
+    # check the audio first, so a missing or unreadable file leaves nothing behind
+    case_mod.audio_info(audio if Path(audio).is_absolute() else Path(path) / audio)
     s = {'name': settings.pop('name', None) or Path(path).name, 'audio': str(audio), 'audio_start_utc': start_utc,
          'search_center': [float(center[0]), float(center[1])]}
     if radius_km is not None:
