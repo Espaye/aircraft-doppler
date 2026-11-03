@@ -26,3 +26,6 @@ Thumbs.db
 site/demo/
 site/vendor/
 .pytest_tmp/
+
+# rendered by tools/make_video.py
+*.mp4
