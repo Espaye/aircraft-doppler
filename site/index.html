@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adoppler: locating a microphone from the aircraft it hears</title>
+<meta name="description" content="Open-source tool that detects aircraft Doppler curves in audio and matches them to historical ADS-B flight data to estimate where a recording was made.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<script src="vendor/plotly.min.js" defer></script>
+<script src="explain.js" defer></script>
+</head>
+<body>
+<header class="hero">
+  <nav><a class="brand" href="./"><img src="favicon.svg" alt="" width="24" height="24"> adoppler</a>
+    <span><a href="#how">How it works</a><a href="#try">Try it</a><a href="demo/">Demo</a><a href="https://github.com/Espaye/aircraft-doppler">GitHub</a></span></nav>
+  <h1>Where was this recorded?<br><span>Ask the aircraft overhead.</span></h1>
+  <p class="lead">A propeller aircraft or jet passing a microphone leaves a falling tone in the audio: the Doppler curve.
+    Its shape depends on how fast the aircraft flew and how close it came. Aircraft broadcast their positions
+    (ADS-B), and those tracks are archived. adoppler finds the curves in a recording and searches for the
+    microphone position at which the archived flights reproduce all of them at once.</p>
+  <p class="cta"><a class="button" href="demo/">Open the demo</a>
+    <a class="button ghost" href="https://github.com/Espaye/aircraft-doppler#install">Install locally</a></p>
+</header>
+
+<main>
+<section id="how">
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li><b>Detect.</b> A spectrogram is enhanced for steady tones; tonal lines are tracked, grouped into harmonics and
+      fitted with a straight-line pass. That gives a speed, a closest distance and a time for each event.</li>
+    <li><b>Fetch flights.</b> Historical ADS-B positions for the recording window come from the
+      <a href="https://adsb.lol">adsb.lol</a> archive (ODbL), adsb.aero, or your own file.</li>
+    <li><b>Search.</b> For every candidate microphone position, each event is compared with the curve every nearby
+      flight would have produced, including sound travel time, the air temperature and an unknown clock offset.</li>
+    <li><b>Report honestly.</b> The best position comes with an event bootstrap, leave-one-out runs, a time-shift null
+      test and a verdict (ok, weak, ambiguous, failed). The prediction is hash-stamped before any reference is
+      entered, so validation cannot leak into it.</li>
+  </ol>
+</section>
+
+<section class="panel">
+  <h2>One pass, one curve</h2>
+  <p>An aircraft flies a straight line past the microphone. Change the pass and watch the received tone. The curve is
+    computed from sound emission time, so the steepest drop comes slightly after the closest approach.</p>
+  <div class="explorer">
+    <form id="pass" class="controls">
+      <label>Speed <output name="v_o"></output><input type="range" name="v" min="80" max="900" step="10" value="220"></label>
+      <label>Closest horizontal distance <output name="d_o"></output><input type="range" name="d" min="0" max="6000" step="50" value="800"></label>
+      <label>Height above the microphone <output name="h_o"></output><input type="range" name="h" min="100" max="10000" step="50" value="600"></label>
+      <label>Engine tone <output name="f_o"></output><input type="range" name="f0" min="40" max="400" step="1" value="110"></label>
+      <label>Air temperature <output name="T_o"></output><input type="range" name="T" min="-20" max="40" step="1" value="15"></label>
+      <p id="pass-readout" class="readout"></p>
+    </form>
+    <div id="pass-plot" class="plot"></div>
+  </div>
+</section>
+
+<section class="panel" id="try">
+  <h2>Many passes, one position</h2>
+  <p>Three aircraft with known tracks were "recorded" at a hidden spot (dots, with measurement noise). Move the
+    microphone and the clock offset until the predicted curves (lines) fit all three. A single curve can be fitted from
+    many places; three only agree near one.</p>
+  <div class="explorer">
+    <form id="mic" class="controls">
+      <label>Microphone east <output name="e_o"></output><input type="range" name="e" min="-4000" max="4000" step="25" value="-2500"></label>
+      <label>Microphone north <output name="n_o"></output><input type="range" name="n" min="-4000" max="4000" step="25" value="1800"></label>
+      <label>Clock offset <output name="dt_o"></output><input type="range" name="dt" min="-6" max="6" step="0.1" value="0"></label>
+      <p id="mic-readout" class="readout"></p>
+      <p class="row"><button type="button" id="mic-solve">Search for me</button><button type="button" class="ghost" id="mic-reveal">Reveal</button></p>
+    </form>
+    <div class="twin"><div id="mic-map" class="plot sq"></div><div id="mic-curves" class="plot"></div></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>The full pipeline, in your browser</h2>
+  <p>The <a href="demo/">demo</a> is a read-only copy of the local interface, showing a 20-minute
+    <b>synthetic</b> recording: five aircraft with ADS-B, one without, three silent ADS-B tracks, a passing car, wind,
+    hum and a ground reflection, a recording clock that is 1.6 s off and a temperature setting 3 °C too low. The
+    microphone position was hidden from the search and compared only afterwards.</p>
+  <table class="facts">
+    <!-- facts: written by tools/build_site.py -->
+    <tr><th>Events detected</th><td>13 (7 pass the quality filter, 5 explained by ADS-B flights)</td></tr>
+    <tr><th>Error against the hidden position</th><td>9 m (90% bootstrap radius 25 m)</td></tr>
+    <tr><th>Clock offset fitted</th><td>1.78 s ± 0.25 s (true 1.6 s)</td></tr>
+    <!-- /facts -->
+    <tr><th>Run time on a laptop</th><td>about 2 minutes, rendering included</td></tr>
+  </table>
+  <p class="note">Synthetic tests only show that the method is internally consistent: they use the same physics that
+    generated the audio. Accuracy on real recordings has to come from independent validation. Real-recording
+    validation is in progress; results will be published as error distances, never as locations.</p>
+</section>
+
+<section class="panel">
+  <h2>Run it on your own recording</h2>
+  <p>Processing stays on your computer. You need Python 3.10 or newer.</p>
+  <pre><code>git clone https://github.com/Espaye/aircraft-doppler
+cd aircraft-doppler
+python -m pip install .
+adoppler serve</code></pre>
+  <p>The browser interface opens at <code>http://127.0.0.1:8765</code>. Create a case from a WAV or FLAC file with its UTC
+    start time and a rough search area, or render the synthetic example first. Command-line use, the case format and
+    instructions for coding agents are in the <a href="https://github.com/Espaye/aircraft-doppler#readme">README</a>.</p>
+  <h3>What it needs and where it fails</h3>
+  <ul>
+    <li>At least two, better five or more, audible aircraft passes that are in the ADS-B archive. Light aircraft and
+      helicopters without ADS-B, road traffic and music cannot be matched.</li>
+    <li>A recording start time known to within a few seconds; the offset itself is fitted.</li>
+    <li>Unedited audio: time stretching, cuts or pitch changes break the physics.</li>
+    <li>The tool reports "weak", "ambiguous" or "failed" instead of a confident wrong answer when the evidence is thin.</li>
+  </ul>
+  <h3>Responsible use</h3>
+  <p>Locating a recording can locate a person. Analyse recordings you made or have permission to analyse, and do not
+    publish positions derived from other people's recordings without their consent.</p>
+</section>
+</main>
+
+<footer class="foot">adoppler is MIT licensed. Flight data © <a href="https://adsb.lol">adsb.lol</a> contributors (ODbL 1.0) and
+  <a href="https://adsb.aero">adsb.aero</a>. Map tiles © <a href="https://carto.com/attributions">CARTO</a>, map data ©
+  <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors. Charts by
+  <a href="https://plotly.com/javascript/">plotly.js</a> (MIT).</footer>
+</body>
+</html>

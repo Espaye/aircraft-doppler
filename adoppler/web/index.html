@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adoppler</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="vendor/plotly.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="./"><img src="favicon.svg" alt="" width="22" height="22"> adoppler</a>
+  <label class="picker">Case
+    <select id="case-select" aria-label="Case"></select>
+  </label>
+  <div class="top-actions live-only">
+    <button id="btn-new" class="ghost">New case</button>
+    <button id="btn-synth" class="ghost" title="Render a synthetic recording with a known answer">Synthetic example</button>
+  </div>
+  <span id="mode-note" class="muted static-only">Read-only demo of a synthetic case. Run <code>adoppler serve</code> locally to analyse your own recordings.</span>
+</header>
+
+<main id="main">
+  <section id="empty" class="card hidden">
+    <h2>No cases yet</h2>
+    <p>A case is one recording with its start time and a rough search area. Create one from an audio file, or render a
+      synthetic recording whose microphone position is known so you can see the whole workflow first.</p>
+    <p class="row live-only"><button id="btn-new2">New case from audio</button>
+      <button id="btn-synth2" class="ghost">Synthetic example (about 2 min to render and run)</button></p>
+  </section>
+
+  <section id="case" class="hidden">
+    <div class="grid2">
+      <div class="card" id="pipeline">
+        <div class="card-head"><h2 id="case-title"></h2><button id="btn-settings" class="ghost small live-only">Settings</button></div>
+        <p id="case-meta" class="muted"></p>
+        <ol class="stages">
+          <li data-stage="analyse"><span class="dot"></span><div><b>1. Detect Doppler events</b><br><span class="muted">spectrogram, tonal lines, curve fits</span></div><button class="small live-only">Run</button></li>
+          <li data-stage="adsb"><span class="dot"></span><div><b>2. Flight data</b><br><span class="muted">historical ADS-B for the window and area</span></div><button class="small live-only">Run</button></li>
+          <li data-stage="match"><span class="dot"></span><div><b>3. Locate the microphone</b><br><span class="muted">blind search, uncertainty, null tests</span></div><button class="small live-only">Run</button></li>
+        </ol>
+        <p class="row live-only"><button id="btn-all">Run all remaining</button>
+          <label class="check"><input type="checkbox" id="force"> recompute finished stages</label></p>
+        <pre id="log" class="log hidden" aria-live="polite"></pre>
+      </div>
+      <div class="card" id="summary">
+        <h2>Result</h2>
+        <div id="result-body"><p class="muted">No result yet. Run the three stages.</p></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Spectrogram</h2>
+        <div class="row small-gap">
+          <label class="check"><input type="checkbox" id="show-sim" checked> model curves</label>
+          <select id="spec-kind" aria-label="Spectrogram type"><option value="tonal">tonal (dB above noise)</option><option value="power">power</option></select>
+        </div>
+      </div>
+      <p class="muted">Detected tonal lines are coloured per event. After the match, dashed lines show the Doppler curve each matched
+        aircraft would produce at the estimated position. Drag to zoom; double-click to reset; click a curve to select its event.</p>
+      <div id="spec" class="plot tall"></div>
+      <div id="event-detail" class="detail hidden"></div>
+      <div class="table-wrap"><table id="events"><thead><tr><th>Event</th><th>Time (UTC)</th><th>Label</th><th>Score</th>
+        <th>Speed</th><th>Closest</th><th>Matched aircraft</th><th>Fit</th><th>Used</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Map</h2>
+        <div class="row small-gap">
+          <label class="check"><input type="checkbox" id="show-cost" checked> search cost</label>
+          <label class="check"><input type="checkbox" id="show-flights" checked> all flights</label>
+        </div>
+      </div>
+      <p class="muted">The shaded points are the coarse search: darker means the detected curves fit the flight data better there.
+        Coloured paths are the aircraft matched to events; grey paths are other traffic in the window.</p>
+      <div id="map" class="plot tall"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg-settings">
+  <form method="dialog" id="form-settings">
+    <h2 id="settings-title">Case settings</h2>
+    <div class="form-grid">
+      <label>Name <input name="name" required maxlength="80"></label>
+      <label id="audio-field">Audio file <input name="audio_file" type="file" accept=".wav,.flac,.ogg,.mp3,.aif,.aiff"></label>
+      <label>Recording start (UTC) <input name="audio_start_utc" placeholder="2026-06-01T12:00:00Z" required>
+        <small>time of the first sample; the fit allows the clock to be off by delay_prior_s</small></label>
+      <label>Search centre (lat, lon) <input name="search_center" placeholder="52.08, 5.83" required>
+        <small>a town or area you believe the microphone is near</small></label>
+      <label>Search radius (km) <input name="search_radius_km" type="number" min="1" max="200" step="1"></label>
+      <label>Ground temperature (°C) <input name="ground_temp_c" type="number" min="-40" max="50" step="0.5"></label>
+      <label>Terrain <select name="terrain"><option value="flat">flat (give elevation)</option><option value="usgs-3dep">USGS 3DEP (United States only)</option></select></label>
+      <label>Ground elevation (m above sea level) <input name="ground_elevation_m" type="number" step="1"></label>
+      <label>Flight data <select name="adsb_source"><option value="auto">automatic (adsb.lol archive, then adsb.aero)</option>
+        <option value="adsb.lol">adsb.lol daily archive (raw, best)</option><option value="adsb.aero">adsb.aero (simplified paths)</option>
+        <option value="file">my own file (JSON or CSV)</option></select></label>
+      <label id="adsb-field">ADS-B file <input name="adsb_file" type="file" accept=".json,.csv"></label>
+      <label>Minimum event score <input name="min_score" type="number" min="0" max="1" step="0.05"></label>
+    </div>
+    <p id="settings-error" class="error hidden"></p>
+    <p class="row end"><button value="cancel" class="ghost" formnovalidate>Cancel</button><button id="btn-save" value="save">Save</button></p>
+  </form>
+</dialog>
+
+<dialog id="dlg-validate">
+  <form method="dialog" id="form-validate">
+    <h2>Validate against a reference</h2>
+    <p class="muted">The prediction above was stored and hash-stamped before any reference was entered. Enter a position you obtained
+      independently (e.g. a surveyed point, photos matched to a map). The error is stored next to the prediction; the
+      prediction itself is not changed.</p>
+    <div class="form-grid">
+      <label>Reference (lat, lon) <input name="ref" placeholder="52.0712, 5.8521" required></label>
+      <label>Source of the reference <input name="source" required maxlength="300" placeholder="how the position was obtained"></label>
+    </div>
+    <p id="validate-error" class="error hidden"></p>
+    <p class="row end"><button value="cancel" class="ghost" formnovalidate>Cancel</button><button value="ok">Store validation</button></p>
+  </form>
+</dialog>
+
+<footer class="foot muted">adoppler <span id="version"></span> · flight data: <a href="https://adsb.lol" rel="noopener">adsb.lol</a> (ODbL) or
+  <a href="https://adsb.aero" rel="noopener">adsb.aero</a> · map tiles © <a href="https://carto.com/attributions" rel="noopener">CARTO</a>,
+  © <a href="https://www.openstreetmap.org/copyright" rel="noopener">OpenStreetMap</a> contributors</footer>
+</body>
+</html>

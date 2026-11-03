@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adoppler"
+version = "0.1.0"
+description = "Detect aircraft Doppler curves in audio and locate the microphone with historical ADS-B flight data"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Espaye" }]
+keywords = ["acoustics", "doppler", "ads-b", "geolocation", "spectrogram", "aircraft"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "soundfile>=0.12",
+  "pyproj>=3.5",
+  "requests>=2.28",
+  "tifffile>=2023.1",
+  "plotly>=5.20",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+adoppler = "adoppler.cli:main"
+
+[project.urls]
+Homepage = "https://aircraft-doppler.vercel.app"
+Source = "https://github.com/Espaye/aircraft-doppler"
+
+[tool.setuptools]
+packages = ["adoppler"]
+
+[tool.setuptools.package-data]
+adoppler = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: renders and solves a synthetic recording (about a minute)"]
