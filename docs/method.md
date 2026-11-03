@@ -90,4 +90,5 @@ truth in `truth.json`, which the search never reads.
 - a temperature setting that is off
 
 Recovering the hidden position therefore tests the detection, the search and the honesty of the uncertainty. It
-does not test the physics itself. That needs real recordings with an independently known position.
+does not test the physics itself. That needs real recordings with an independently known position; the results
+so far are in the Status section of the README.

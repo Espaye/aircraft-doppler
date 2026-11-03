@@ -23,11 +23,18 @@ a wrong temperature setting and distracting sounds) the hidden microphone positi
 reported uncertainty; the demo case is off by 9 m with a 90% radius of 25 m. This proves internal consistency
 only.
 
-Preliminary: a public livestream was recorded on two days, and each recording was analysed blind with frozen code.
-On day 1, 7 of 13 passes were explained, with a bootstrap 90% radius of 125 m. On day 2, 4 of 5 passes were
-explained, with a 90% radius of 292 m. Both verdicts are `ok`, and the two estimates lie 122 m apart; that shows
-consistency, not accuracy. The independent check against the true position has not been done yet. Its error will
-be published here as a distance only; the location stays private.
+Validated on one real site: a public livestream was recorded on two days and each recording was analysed blind
+with frozen code, which the public code reproduces exactly. Each estimate was stamped before the true position was
+consulted. The reference is the microphone position identified on high-resolution aerial imagery (about 3 m).
+
+| Recording | Passes explained | Verdict | 68% / 90% radius | Error |
+|---|---|---|---|---|
+| day 1 | 7 of 13 | `ok` | 35 / 125 m | 17 m |
+| day 2 | 4 of 5 | `ok` | 214 / 292 m | 114 m |
+
+Both errors fall inside the reported 68% radius. This is one site and two recordings: it shows that the method
+works there and that its uncertainty was not too optimistic, not a general accuracy figure. The location stays
+private.
 
 ## Install
 
