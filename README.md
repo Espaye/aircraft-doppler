@@ -5,6 +5,8 @@ on the aircraft's speed and on where the microphone was. adoppler finds these cu
 matches them with historical ADS-B flight tracks and estimates **where the microphone was**, together with an
 honest uncertainty and a verdict on whether the answer can be trusted at all.
 
+https://github.com/user-attachments/assets/dd43477a-876e-4b3c-99ae-7a695fb0c441
+
 - **Live demo (synthetic recording, runs in the browser):** https://aircraft-doppler.vercel.app
 - Everything heavy runs locally: a command line tool plus a browser interface on `127.0.0.1`.
 - Method and assumptions: [docs/method.md](docs/method.md).
