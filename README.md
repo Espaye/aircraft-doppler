@@ -29,7 +29,7 @@ will be published here as a distance only; the location stays private.
 
 ## Install
 
-Needs Python 3.10 or newer and about 300 MB of disk for dependencies. All dependencies are binary wheels, so no
+Needs Python 3.10 or newer and about 350 MB of disk for dependencies. All dependencies are binary wheels, so no
 compiler is needed.
 
 **Windows** (PowerShell):
