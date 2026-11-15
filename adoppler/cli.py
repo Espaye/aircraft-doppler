@@ -44,6 +44,23 @@ def cmd_analyse(a):
     pipeline.analyse(_case(a), force=a.force)
 
 
+def cmd_jets(a):
+    from . import jets
+    try:
+        r = jets.run(_case(a), analyse_only=a.analyse_only, windows=a.window, ids=a.events,
+                     step_m=a.step, timing_slack_s=a.timing_slack, review_labels=a.review_labels)
+    except jets.JetError as e:
+        raise case_mod.CaseError(str(e))
+    print(f"experimental assessment: {r['status']}")
+    for flag in r.get('flags', []):
+        print(f'  - {flag}')
+    region = r.get('compatible_region')
+    if region:
+        print(f"near-best sampled region: {region['lat_min']:.3f} to {region['lat_max']:.3f} N, "
+              f"{region['lon_min']:.3f} to {region['lon_max']:.3f} E; "
+              f"{region['sampled_area_km2']:.0f} square km (not a confidence region)")
+
+
 def cmd_adsb(a):
     pipeline.fetch_adsb(_case(a), force=a.force, source=a.source)
 
@@ -133,6 +150,14 @@ def main(argv=None):
     q.add_argument('--seed', type=int, default=1)
     q = add('analyse', cmd_analyse, 'detect Doppler events in the audio')
     q.add_argument('--force', action='store_true', help='recompute')
+    q = add('jets', cmd_jets, 'experimental broadband sound screening and coarse flight-envelope matching')
+    q.add_argument('--analyse-only', action='store_true', help='inspect audio without flight matching')
+    q.add_argument('--window', nargs=2, type=float, action='append', metavar=('START', 'END'),
+                   help='manually select a sound window in seconds from recording start; repeat for separate sounds')
+    q.add_argument('--review-labels', help='listening-label JSON export; use only explicit likely_jet labels')
+    q.add_argument('--events', nargs='+', help='use only these broadband event IDs (J01, J02, ...)')
+    q.add_argument('--step', type=float, default=2000, help='coarse search grid spacing in metres (default 2000)')
+    q.add_argument('--timing-slack', type=float, default=45, help='per-event timing slack beyond clock prior, seconds (default 45)')
     q = add('adsb', cmd_adsb, 'fetch historical ADS-B tracks for the recording')
     q.add_argument('--source', choices=['auto', 'adsb.lol', 'adsb.aero', 'file'])
     q.add_argument('--force', action='store_true', help='fetch again')

@@ -103,6 +103,59 @@ Every stage caches its output in the case folder, so you can stop and resume. `-
 `adoppler status <case>` shows what is done. In the browser you can listen to each event, see the measured
 curve against the predicted one, leave events out, or draw a curve by hand where detection failed.
 
+### Experimental high-altitude jet screening
+
+The normal detector is designed for narrow engine/propeller tones. An audible jet roar can be present without
+passing that detector. The separate **experimental** `jets` command retains sustained broadband sound and can
+compare its rise and fall with flight tracks. It does not identify airliners from sound and has no validated
+real-world location accuracy.
+
+```sh
+adoppler jets cases/garden --analyse-only   # private broadband candidates and an interactive local report
+adoppler adsb cases/garden                 # existing flight-data stage; today's archive may not be ready
+adoppler jets cases/garden                 # compare candidates with available high/fast aircraft
+# Optional: restrict to a sound you heard, START and END in seconds from recording start:
+adoppler jets cases/garden --window 720 900
+```
+
+Outputs stay in `<case>/jets/`, separate from the tonal prediction: `report.html`, `envelope.json`, `events.json`,
+`result.json` with a SHA-256 stamp, and `grid.npz` when flight data are present. Rerunning regenerates these
+experimental files; it never changes `match/result.json`. No flights are downloaded by `jets` itself. Without
+flight data it saves candidates and reports `awaiting_adsb`, with no position. The flight-data radius must cover
+the microphone search radius plus 40 km; increase `aircraft_radius_km` before fetching a wider search.
+Review candidates in the report;
+wind, traffic, speech, handling and recording edges can resemble a flyover. `--events J02 J04` selects candidates;
+repeat `--window START END` for distinct sounds. Windows must not overlap.
+
+Short impacts are now checked at approximately 0.1 s resolution using relative changes, not an absolute loudness
+cutoff. The report shows impact flags, spectral balance and rapid level changes. Red spans mark suspect impacts;
+a separate green envelope interpolates the affected one-second band measurements before smoothing. Matching
+omits samples touching those spans. Original audio and original candidate windows are preserved: an aircraft
+can overlap a bump, and a smooth road vehicle can still pass this screening. These features are not a trained
+jet/road classifier.
+
+If you have a listening-page JSON export, select its explicit `likely_jet` labels with:
+
+```sh
+adoppler jets cases/garden --review-labels cases/garden/jets/listening-labels.json
+```
+
+Other labels, including `unreviewed`, are withheld; notes are displayed verbatim, not interpreted automatically.
+The recording ID, start time, candidate IDs and 20 s padded clip windows must match. Rerun the review if detection
+changes. All candidates remain in `events.json` and the report with `selected_for_matching`; the result records
+the selected IDs and review-file hash. `--events` further restricts the reviewed positives. Manual `--window`
+cannot be combined with `--review-labels`. Without a review file the broad screen still uses all candidates.
+
+The search includes sound travel time, unknown sound level, limited envelope scaling and a default extra
+45 seconds of timing slack per event for unmodelled directivity and propagation. `--timing-slack` changes that
+assumption; `--step` changes the coarse grid spacing (default 2000 m). These are hypotheses, not measurements of
+speed, range or recording latency. A single pass usually leaves a corridor or a mirror ambiguity. Several
+independently assigned flights can narrow the compatible area. Wrong-time controls, leave-one-out movement,
+whole-event bootstrap stability and near-best grid cells expose some degeneracies. They are **not calibrated
+confidence intervals**: even a good score may be a coincidence or a wrong noise model. Status remains
+`exploratory` at best; `location_estimate` is deliberately null. A best grid hypothesis is conditional evidence,
+not a validated microphone position. See [the experimental method](docs/method.md#7-experimental-broadband-jet-screening).
+
 ### Settings (`case.json`)
 
 | Key | Default | Meaning |
@@ -149,8 +202,9 @@ result. The prediction is stamped with a SHA-256 hash when it is made, and `adop
 
 ## Limitations
 
-- It needs tonal sources: piston and turboprop aircraft at low altitude. Jets at cruise altitude are usually
-  too faint or too slow in pitch change.
+- The normal Doppler matcher needs tonal sources: piston and turboprop aircraft at low altitude. Jets at
+  cruise altitude often lack usable tones. The experimental `jets` command instead screens broadband envelopes;
+  its rough spatial hypotheses have not been validated on real high-altitude jets.
 - Clock errors beyond `delay_prior_s`, heavy wind shear, echoes from buildings or a microphone indoors can bias
   the result. The verdict catches some of this, but not all.
 - Aircraft without ADS-B (many light aircraft) produce events that nothing can explain. They are reported and

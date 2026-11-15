@@ -92,3 +92,77 @@ truth in `truth.json`, which the search never reads.
 Recovering the hidden position therefore tests the detection, the search and the honesty of the uncertainty. It
 does not test the physics itself. That needs real recordings with an independently known position; the results
 so far are in the Status section of the README.
+
+## 7. Experimental broadband jet screening
+
+`adoppler jets` is an independent opt-in experiment, not a relaxation of the Doppler quality threshold. Each
+one-second audio block yields a Welch PSD. The median spectral level within 100-250, 250-500, 500-1000 and
+1000-2000 Hz suppresses isolated tones while preserving broadband energy. Five-second median and four-second
+Gaussian smoothing remove short fluctuations. A recording-wide 20th-percentile baseline per band preserves
+slow rises that the tonal enhancement removes. The median of the four relative band levels is an activity
+envelope, in uncalibrated relative dB. It is neither sound-pressure level nor an aircraft likelihood.
+
+Prominent sustained activity produces unclassified candidates. Overlapping automatic spans are merged;
+manual windows are supported. Recording-edge clipping, rapid onsets, very long events and limited frequency
+support are flagged. The method does not yet distinguish aircraft from wind, vehicles or microphone handling.
+
+A second, faster view computes RMS in roughly 0.1 s frames (rounded sample edges). A frame more than 8 dB
+above its 51-frame local median and with an adjacent-frame jump above 8 dB is marked as a possible impact.
+This is an experimental heuristic informed by listening examples, not a calibrated detector. Each mark is padded
+by ten frames on either side. One-second PSD blocks touching those spans are interpolated from unmarked blocks
+before the existing smoothing and baseline calculation, giving `clean_activity_db`. Original activity, candidate
+IDs and bounds are retained so reviews remain comparable. Matching uses the cleaned envelope and omits samples
+within one second of each masked span; fewer than five samples or less than 20 s of remaining support cannot
+fit. Smoothing of interpolated band levels is an approximation, not recovered source audio. Retained observations
+are fixed before flight comparison and before the wrong-time controls; a hypothesis cannot choose which audio
+to ignore. The report overlays both envelopes and lists impact counts, the 99th percentile of absolute fast
+level differences, and median low-band versus high-band PSD contrast. These are gain-relative diagnostics,
+not aircraft scores. Loud sustained sounds are allowed; an impact does not veto an entire candidate.
+
+`--review-labels` imports explicit human `likely_jet` selections from a listening-page JSON export. The case
+folder ID, UTC start, complete candidate ID set and 20 s padded clip bounds (0.1 s tolerance) must agree with
+the current audio analysis. Negative, mixed, uncertain and unreviewed labels are withheld, and free-text notes
+are preserved without automatic interpretation. These are human source impressions, not independently verified
+flight labels. All candidates remain in `events.json` and the report; `selected_for_matching` states the actual
+selection. The result includes selected IDs and the review SHA-256. `--events` intersects that selection; manual
+windows are incompatible with a review export. Without explicit review input no source classification or
+review-based exclusion is applied. New recordings are needed to evaluate generalisation beyond the examples.
+
+With ADS-B available, the existing retarded-time solver supplies slant range R at the emission time for each
+candidate receiver and flight. A fixed-source inverse-square-intensity hypothesis gives a level proportional
+to -20 log10(R). An offset removes the unknown source level; a nonnegative gain limited to [0, 2] allows modest
+compression or extra attenuation. This deliberately simplified shape omits source directivity, changing thrust,
+frequency-dependent atmospheric absorption, wind refraction, ground interference and phone gain control. Sound
+travel time is explicitly included, so the observed peak need not coincide with visual overhead passage.
+
+Candidate tracks have median MSL altitude at least 4000 m and median horizontal speed 140-340 m/s. These filters
+select high/fast traffic, not a known aircraft class. The audibility hypothesis cuts off best slant ranges above
+40 km; flight retrieval must therefore cover the prior search radius plus 40 km. A coarse search covers the prior disc (2 km default spacing). Each event profiles an extra +/-45 s timing
+shift beyond the case clock prior, sampled at 10 s plus endpoints. This is nuisance slack, not a separately
+identified clock correction. Full padded event support must be covered by the track; partial data cannot win
+by fitting only the peak. Cost is residual energy divided by observed variation after the shape fit. A residual
+fraction <=0.5 passes an exploratory shape screen; that threshold is not a calibrated probability.
+
+Assignments are one to one, with dummy unmatched sounds. Repeated ICAO records are combined so one aircraft
+cannot supply multiple independent constraints. Three circular time shifts repeat the same search as coincidence
+diagnostics, not formal significance tests. Whole windows move without splicing their sound across the wrap;
+a window may extend into the flight-data padding beyond the recording. Leave-one-out and 100 whole-event
+bootstrap resamples redo assignments and report coarse-grid movement. They measure model-conditional stability,
+not real-world accuracy; shared flight-data and propagation errors are not captured.
+
+The result gives near-best cells within 0.05 of the best mean shape score, their sampled area and bounding box.
+The set may be disconnected or follow an extended corridor. It is not a posterior or confidence region. One
+flight, similarly good wrong-time fits, broad/boundary-reaching regions, unstable leave-one-out positions and
+flagged events prevent an unqualified result. All results remain experimental, with status `exploratory` at best
+and no claimed `location_estimate`. In particular, a very small bootstrap spread cannot establish accuracy.
+Synthetic tests verify implementation and ambiguity preservation only. Independent real recordings with known
+microphone positions are needed to establish whether this method can reliably narrow a region.
+
+The physical distinction between broadband jet noise and tonal fan noise, and the importance of directivity,
+spreading, atmospheric absorption and propagation time are described in NASA's
+[Auralization of Air Vehicle Noise for Community Noise Assessment](https://ntrs.nasa.gov/citations/20200002351).
+Our inverse-range envelope is a deliberately limited hypothesis, not an implementation of that full model.
+
+No public server endpoints or browser UI behavior change. The private standalone HTML report embeds the installed
+Plotly library and uses no map tiles. Experimental files and their input/code hashes are saved under `jets/`,
+with a result SHA-256 stamp, apart from the normal blind Doppler prediction and validation/export paths.
