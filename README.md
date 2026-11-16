@@ -103,6 +103,19 @@ Every stage caches its output in the case folder, so you can stop and resume. `-
 `adoppler status <case>` shows what is done. In the browser you can listen to each event, see the measured
 curve against the predicted one, leave events out, or draw a curve by hand where detection failed.
 
+### Recording tips
+
+- Record outdoors with the phone lying still, away from busy roads: passing cars and lorries also make engine
+  tones with a Doppler shift, and handling the phone makes impulsive noise.
+- Use a plain recorder mode without noise suppression or speech enhancement, and keep the original file.
+- Note the start time. The phone clock is usually right within a second; `delay_prior_s` covers a few seconds.
+- Record long enough to catch several independent passes (30 minutes or more near a flight path). One pass
+  gives a line, not a point.
+- Write down when you hear an aircraft and what it sounds like (propeller or jet). If you can, check a flight
+  tracker at the same time: those notes tell you which events to trust.
+- Low light aircraft often drop out of ADS-B coverage near the ground, so a clear low pass can stay
+  unexplained. `match` then names the likely aircraft (see [Reading the result](#reading-the-result)).
+
 ### Which sounds are aircraft? (`classify`)
 
 A recording near a road holds many more cars and trucks than aircraft. `classify` labels every sustained sound
@@ -233,8 +246,9 @@ result. The prediction is stamped with a SHA-256 hash when it is made, and `adop
   its rough spatial hypotheses have not been validated on real high-altitude jets.
 - Clock errors beyond `delay_prior_s`, heavy wind shear, echoes from buildings or a microphone indoors can bias
   the result. The verdict catches some of this, but not all.
-- Aircraft without ADS-B (many light aircraft) produce events that nothing can explain. They are reported and
-  left out of the result.
+- Aircraft without ADS-B (many light aircraft), or low aircraft outside receiver coverage, produce events that
+  nothing can explain. They are reported and left out of the result; aircraft whose track has a gap at that
+  moment are listed as coverage-gap candidates.
 - The physics is a straight-ray, layered-atmosphere model, with no refraction by wind and no terrain shadowing.
 
 ## Privacy and responsible use
