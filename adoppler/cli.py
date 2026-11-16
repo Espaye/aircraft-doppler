@@ -190,7 +190,7 @@ def main(argv=None):
     q.add_argument('--events', nargs='+', help='use only these broadband event IDs (J01, J02, ...)')
     q.add_argument('--classified', action='store_true', help='use only the sounds `adoppler classify` screened as jets')
     q.add_argument('--step', type=float, default=2000, help='coarse search grid spacing in metres (default 2000)')
-    q.add_argument('--timing-slack', type=float, default=45, help='per-event timing slack beyond clock prior, seconds (default 45)')
+    q.add_argument('--timing-slack', type=float, default=5, help='slack of the one clock offset shared by all sounds beyond the clock prior, seconds (default 5)')
     q = add('adsb', cmd_adsb, 'fetch historical ADS-B tracks for the recording')
     q.add_argument('--source', choices=['auto', 'adsb.lol', 'adsb.aero', 'file'])
     q.add_argument('--force', action='store_true', help='fetch again')

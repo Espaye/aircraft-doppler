@@ -9,6 +9,16 @@ import soundfile as sf
 from adoppler import adsb, case, cli, geo, jets, physics
 
 
+ALPHA = float(physics.absorption_db_per_m(jets.ABSORPTION_HZ, 15))   # case default ground temperature
+
+
+def level(R, peak_db=30.0):
+    """Synthetic activity in dB above the noise floor: spreading and air absorption, power-added to the floor."""
+    v = -20 * np.log10(R) - ALPHA * R
+    v = v - v.max() + 10 * np.log10(10 ** (peak_db / 10) - 1)
+    return 10 * np.log10(1 + 10 ** (v / 10))
+
+
 def make_case(tmp_path, seconds=600, radius=15):
     fs = 4000
     sf.write(str(tmp_path / 'a.wav'), np.zeros(seconds * fs, np.float32), fs)
@@ -81,6 +91,39 @@ def test_gaps_anticorrelation_and_flat_envelopes_cannot_win():
     assert jets.shape_cost((y / 1000)[None], y)[0] > .99
 
 
+def test_air_absorption_matches_iso_9613_table():
+    # ISO 9613-2 table 2, dB/km at 70 % relative humidity
+    for t_c, table in ((20, {500: 2.8, 1000: 5.0, 2000: 9.0}), (10, {500: 1.9, 1000: 3.7, 4000: 32.8})):
+        for f, db_km in table.items():
+            assert physics.absorption_db_per_m(f, t_c) * 1000 == pytest.approx(db_km, rel=.03)
+
+
+def test_level_fit_uses_bounded_gain_and_directivity():
+    k = np.arange(60.)
+    x = -20 * np.log10(np.hypot(9000, 230 * (k - 30) * 4))
+    u = (k - 30) / np.hypot(9000 / 230 / 4, k - 30)          # cosine: towards, then away
+    cost, gain, b = jets.fit_level(x, 1.2 * x + 3 * u + 50, u)
+    assert cost < 1e-9 and gain == pytest.approx(1.2) and b == pytest.approx(3)
+    assert jets.shape_cost(x, 1.2 * x + 3 * u) > 1e-3          # without the term the asymmetry stays
+    cost, _, b = jets.fit_level(x, x + 12 * u, u)
+    assert b == pytest.approx(jets.DIRECTIVITY_DB[1]) and cost > 1e-3   # b is bounded
+    cost, gain, _ = jets.fit_level(x / 20, x, u)
+    assert gain == pytest.approx(jets.GAIN_LIMITS[1]) and cost > .5    # an almost flat model is not stretched
+    cost, gain, _ = jets.fit_level(x, -x, u)
+    assert gain == pytest.approx(jets.GAIN_LIMITS[0]) and cost == 1    # nor inverted
+
+
+def test_sounds_share_one_clock_offset():
+    # Each sound fits at its own offset, but the two offsets differ: the shared offset cannot serve both.
+    costs = np.ones((2, 1, 2, 2), np.float32)       # sound x cell x offset x flight
+    costs[0, 0, :, 0] = .1, .9
+    costs[1, 0, :, 1] = .9, .1
+    per, assoc = jets._assign_lags(costs)
+    assert (assoc[:, 0] == [[0, 0], [1, 1]]).all()
+    score, _ = jets._best_offsets(per)
+    assert score[0] == pytest.approx(.5)              # not .9, as per-sound timing shifts would give
+
+
 def test_one_aircraft_cannot_be_counted_as_two_independent_passes():
     costs = np.array([[[.01]], [[.02]]])
     per, assoc = jets._assign(costs)
@@ -96,7 +139,7 @@ def test_single_pass_retains_mirror_and_corridor_ambiguity(tmp_path):
     adsb.save_tracks([tr, tr], c.tracks_path)  # Duplicate archive records still mean one aircraft.
     t = np.arange(.5, 600)
     cs = physics.path_sound_speed(15, 2, 9000)
-    y = -20 * np.log10(independent_range(c.t0 + t, c.t0 + 280, origin, velocity, obs, cs))
+    y = level(independent_range(c.t0 + t, c.t0 + 280, origin, velocity, obs, cs))
     env = {'t_s': t.tolist(), 'activity_db': y.tolist()}
     events = [{'id': 'J01', 't_start': 180, 't_end': 420, 'flags': []}]
     r, g = jets.match(c, env, events, step_m=2500, log=lambda *a: None)
@@ -113,6 +156,7 @@ def test_three_crossing_passes_and_saved_data_are_not_claimed_as_real_accuracy(t
     c = make_case(tmp_path, seconds=1300)
     enu = geo.ENU(*c.center)
     observer = np.array([2500, -2500, 2])
+    delta = 4.0     # recording clock ahead of acoustic time, shared by every sound
     t = np.arange(.5, 1300)
     y = np.zeros(len(t))
     tracks, events = [], []
@@ -121,13 +165,16 @@ def test_three_crossing_passes_and_saved_data_are_not_claimed_as_real_accuracy(t
         origin, velocity = np.array([0, 0, 9000]), np.array(vel)
         tracks.append(flight(enu, c.t0 + cpa, origin, velocity, f'abc12{k}'))
         sel = abs(t - cpa) < 190
-        y[sel] = -20 * np.log10(independent_range(c.t0 + t[sel], c.t0 + cpa, origin, velocity, observer, cs))
+        y[sel] = level(independent_range(c.t0 + t[sel] - delta, c.t0 + cpa, origin, velocity, observer, cs))
         events.append({'id': f'J{k + 1:02d}', 't_start': cpa - 90, 't_end': cpa + 100, 'flags': []})
     adsb.save_tracks(tracks, c.tracks_path)
     r, g = jets.match(c, {'t_s': t.tolist(), 'activity_db': y.tolist()}, events, step_m=2500,
                       timing_slack_s=0, log=lambda *a: None)
     assert r['n_supported'] == 3
     assert len({a['icao24'] for a in r['assignments']}) == 3
+    assert abs(r['clock_offset_s'] - delta) <= 1.5
+    assert {a['timing_shift_s'] for a in r['assignments']} == {r['clock_offset_s']}
+    assert r['settings']['absorption_db_per_km'] == pytest.approx(ALPHA * 1000, abs=1e-3)
     true_cell = np.flatnonzero((g['E_m'] == observer[0]) & (g['N_m'] == observer[1]))[0]
     assert g['near_best'][true_cell]
     assert r['stability']['bootstrap_grid_90_m'] is not None
@@ -167,7 +214,7 @@ def test_matched_report_grid_stamp_and_cli_rerun(tmp_path):
     cs = physics.path_sound_speed(15, 2, 9000)
     R = independent_range(c.t0 + t, cpa, origin, velocity, observer, cs)
     rng = np.random.default_rng(7)
-    sf.write(str(c.audio_path), (.001 + 450 / R) * rng.normal(size=len(t)), fs)
+    sf.write(str(c.audio_path), (.001 + 3000 / R * 10 ** (-ALPHA * R / 20)) * rng.normal(size=len(t)), fs)
     r = jets.run(c, windows=[(180, 420)], step_m=2500, timing_slack_s=0, log=lambda *a: None)
     assert r['status'] == 'ambiguous' and r['n_supported'] == 1
     out = c.dir / 'jets'

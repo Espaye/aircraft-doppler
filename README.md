@@ -181,9 +181,11 @@ changes. All candidates remain in `events.json` and the report with `selected_fo
 the selected IDs and review-file hash. `--events` further restricts the reviewed positives. Manual `--window`
 cannot be combined with `--review-labels`. Without a review file the broad screen still uses all candidates.
 
-The search includes sound travel time, unknown sound level, limited envelope scaling and a default extra
-45 seconds of timing slack per event for unmodelled directivity and propagation. `--timing-slack` changes that
-assumption; `--step` changes the coarse grid spacing (default 2000 m). These are hypotheses, not measurements of
+The level model includes sound travel time, spherical spreading, air absorption (ISO 9613-1 at 354 Hz, from
+`ground_temp_c` and 70 % humidity), the recording's noise floor, an unknown sound level, limited envelope scaling
+and a bounded front/rear directivity term. All sounds share one recording clock offset, searched in 1 s steps over
+the clock prior plus 5 s either side; `--timing-slack` changes that margin and `--step` the coarse grid spacing
+(default 2000 m). These are hypotheses, not measurements of
 speed, range or recording latency. A single pass usually leaves a corridor or a mirror ambiguity. Several
 independently assigned flights can narrow the compatible area. Wrong-time controls, leave-one-out movement,
 whole-event bootstrap stability and near-best grid cells expose some degeneracies. They are **not calibrated

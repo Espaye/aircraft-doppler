@@ -135,17 +135,25 @@ windows are incompatible with a review export. Without explicit review input no 
 review-based exclusion is applied. New recordings are needed to evaluate generalisation beyond the examples.
 
 With ADS-B available, the existing retarded-time solver supplies slant range R at the emission time for each
-candidate receiver and flight. A fixed-source inverse-square-intensity hypothesis gives a level proportional
-to -20 log10(R). An offset removes the unknown source level; a nonnegative gain limited to [0, 2] allows modest
-compression or extra attenuation. This deliberately simplified shape omits source directivity, changing thrust,
-frequency-dependent atmospheric absorption, wind refraction, ground interference and phone gain control. Sound
-travel time is explicitly included, so the observed peak need not coincide with visual overhead passage.
+candidate receiver and flight. The model level is -20 log10(R) - alpha R: spherical spreading plus ISO 9613-1
+air absorption at 354 Hz (the centre of the 250-500 Hz band), with alpha from `ground_temp_c` and 70 % relative
+humidity (1.7 dB/km at 15 C). The observed activity is dB above the recording's noise floor, so the model is
+too: its peak is set to the observed peak and the floor is added in power, so a distant aircraft fades into the
+floor instead of falling 100 dB below it. A term b cos(theta), with theta the angle between the flight direction
+and the line to the observer at emission, allows a louder front or rear arc (b in [-8, 4] dB, weighted by the
+aircraft's share of the power). An offset and a gain limited to [0.3, 2] fit the rest; a gain of at least 0.3
+rules out flat or inverted fits. The model still omits changing thrust, wind refraction, ground interference
+and phone gain control. Sound travel time is explicitly included, so the observed peak need not coincide with
+visual overhead passage.
 
 Candidate tracks have median MSL altitude at least 4000 m and median horizontal speed 140-340 m/s. These filters
 select high/fast traffic, not a known aircraft class. The audibility hypothesis cuts off best slant ranges above
-40 km; flight retrieval must therefore cover the prior search radius plus 40 km. A coarse search covers the prior disc (2 km default spacing). Each event profiles an extra +/-45 s timing
-shift beyond the case clock prior, sampled at 10 s plus endpoints. This is nuisance slack, not a separately
-identified clock correction. Full padded event support must be covered by the track; partial data cannot win
+25 km (about 40 dB of absorption alone); flight retrieval covers the prior search radius plus 40 km, with
+margin. A coarse search covers the prior disc (2 km default spacing). All sounds share one recording clock offset,
+because one phone clock records them all: it is searched in 1 s steps over the case clock prior plus 5 s either
+side (`--timing-slack`), and every cell takes its best offset. Fitting a separate shift per sound would let each
+sound slide its envelope to a wrong flight. The fitted offset is a nuisance parameter, not a calibrated clock
+correction. Full padded event support must be covered by the track; partial data cannot win
 by fitting only the peak. Cost is residual energy divided by observed variation after the shape fit. A residual
 fraction <=0.5 passes an exploratory shape screen; that threshold is not a calibrated probability.
 
@@ -167,7 +175,7 @@ microphone positions are needed to establish whether this method can reliably na
 The physical distinction between broadband jet noise and tonal fan noise, and the importance of directivity,
 spreading, atmospheric absorption and propagation time are described in NASA's
 [Auralization of Air Vehicle Noise for Community Noise Assessment](https://ntrs.nasa.gov/citations/20200002351).
-Our inverse-range envelope is a deliberately limited hypothesis, not an implementation of that full model.
+Our level model is a deliberately limited hypothesis, not an implementation of that full model.
 
 No public server endpoints or browser UI behavior change. The private standalone HTML report embeds the installed
 Plotly library and uses no map tiles. Experimental files and their input/code hashes are saved under `jets/`,

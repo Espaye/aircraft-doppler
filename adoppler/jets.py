@@ -1,9 +1,10 @@
 """Experimental broadband flyover screening; never used by the tonal matcher.
 
-Broad sound is not an aircraft classifier. The inverse-range envelope below is a
-hypothesis, not a calibrated jet noise model: source directivity, atmospheric
-absorption, wind and microphone AGC can all change its shape. Compatible grid
-cells and resampling are sensitivity diagnostics, not location confidence bounds.
+Broad sound is not an aircraft classifier. The level model below (spherical spreading,
+air absorption, the noise floor, a bounded directivity term, one clock offset shared by all sounds) is a
+hypothesis, not a calibrated jet noise model: variable thrust, wind, ground effect and
+microphone AGC can all change the envelope. Compatible grid cells and resampling are
+sensitivity diagnostics, not location confidence bounds.
 """
 import datetime as dt
 import hashlib
@@ -19,12 +20,18 @@ import soundfile as sf
 from . import adsb, geo, physics
 
 BANDS = ((100, 250), (250, 500), (500, 1000), (1000, 2000))
+ABSORPTION_HZ = 354.0            # air absorption is evaluated at the centre of the 250-500 Hz band
+GAIN_LIMITS = (0.3, 2.0)         # modest envelope compression or extra attenuation, never a flat or inverted model
+DIRECTIVITY_DB = (-8.0, 4.0)     # level change per unit cos(angle between flight direction and observer)
+MAX_RANGE_M = 25000              # audibility cutoff: about 40 dB of 354 Hz absorption alone at 15 C
+LAG_STEP_S = 1.0                 # spacing of the shared clock offsets that are searched
 LIMITATIONS = [
     'Experimental envelope matching, not validated on real high-altitude jets.',
     'Impact screening is a relative heuristic; listening labels are human impressions, not verified identities.',
     'Broadband candidates can be wind, road traffic, speech or microphone handling.',
-    'An inverse-range shape omits jet directivity, variable thrust, absorption, wind and phone AGC.',
-    'Timing slack is a modelling assumption, not a measured recording clock offset.',
+    'The level model (spreading, ISO 9613-1 absorption at 354 Hz, a bounded directivity term) omits variable '
+    'thrust, wind, ground effect and phone AGC.',
+    'One clock offset is shared by all sounds; its slack beyond the clock prior is an assumption, not a measurement.',
     'Compatible cells and bootstrap distances are sensitivity diagnostics, not confidence intervals.',
     'One flight normally leaves a corridor or mirror ambiguity; a ranked cell is not a location estimate.',
 ]
@@ -221,35 +228,83 @@ def _observations(env, event):
     return rel[keep], np.interp(rel[keep], et, ey)
 
 
-def range_level(traj, observers, t_rx, c):
-    """Fixed-source inverse-square intensity in dB, including retarded emission time.
+def level_terms(traj, observers, t_rx, c, alpha=0.0):
+    """Model level in dB (spherical spreading, air absorption alpha in dB/m) and the directivity cosine.
 
-    R is slant range at emission. The additive source level is unknown. This
-    deliberately has no Doppler-derived pitch, speed or absolute acoustic range.
+    Both use the retarded emission time; R is slant range then. cos is +1 when the aircraft flies straight
+    towards the observer and -1 when it flies away. The additive source level is unknown. This deliberately
+    has no Doppler-derived pitch, speed or absolute acoustic range.
     """
-    _, R, _ = physics.doppler(traj, observers, t_rx, c)
-    return -20 * np.log10(np.maximum(R, 1))
+    _, R, tau = physics.doppler(traj, observers, t_rx, c)
+    P, V = traj.at(tau)
+    D = np.asarray(observers, float).reshape(-1, 1, 3) - P
+    cos = np.einsum('mkj,mkj->mk', V, D) / (np.linalg.norm(V, axis=-1) * R + 1e-9)
+    return -20 * np.log10(np.maximum(R, 1)) - alpha * R, cos, R
 
 
-def shape_cost(predicted, observed):
-    """Residual fraction after offset and positive gain in [0, 2]; no anticorrelation.
+def above_floor(x, u, peak_db):
+    """Model level above the recording's noise floor, as the observed activity is.
 
-    Fixed support is mandatory: sparse tracks cannot win by fitting only a peak.
-    Gain allows modest compression/extra attenuation, not unlimited stretching of
-    an almost flat distant source. Constant or near-flat audio has no information.
+    The source level is set so the model peak equals the observed peak (peak_db above the floor); the floor
+    adds in power, so a distant aircraft fades into the floor instead of falling without limit. The
+    directivity term is weighted by the aircraft's share of the power, so it vanishes at the floor too.
+    """
+    s = 10 * np.log10(10 ** (max(peak_db, .5) / 10) - 1)
+    v = s + x - np.max(np.where(np.isfinite(x), x, -np.inf), axis=-1, keepdims=True)
+    z = 10 * np.log10(1 + 10 ** (v / 10))
+    return z, u * (1 - 10 ** (-z / 10))
+
+
+def range_level(traj, observers, t_rx, c):
+    """Fixed-source inverse-square intensity in dB, including retarded emission time."""
+    return level_terms(traj, observers, t_rx, c)[0]
+
+
+def fit_level(predicted, observed, directivity=None):
+    """Fit observed ~ offset + gain * predicted (+ b * directivity) with bounded gain and b.
+
+    Returns (residual fraction, gain, b). The gain stays in GAIN_LIMITS: modest compression or extra
+    attenuation, never an inverted or unlimited stretch of an almost flat distant source. b stays in
+    DIRECTIVITY_DB, so it cannot replace the range term. Fixed support is mandatory: sparse tracks cannot win
+    by fitting only a peak. Constant or near-flat audio has no information.
     """
     x, y = np.asarray(predicted, float), np.asarray(observed, float)
+    shape = x.shape[:-1]
     y = y - y.mean()
     energy = float(np.sum(y ** 2))
     if np.ptp(y) < 2 or energy < 1:
-        return np.ones(x.shape[:-1])
-    valid = np.isfinite(x).all(axis=-1)
-    x = np.where(np.isfinite(x), x, 0)
-    x = x - x.mean(axis=-1, keepdims=True)
-    xx = np.sum(x * x, axis=-1)
-    gain = np.clip(np.sum(x * y, axis=-1) / np.maximum(xx, 1e-12), 0, 2)
-    cost = np.sum((gain[..., None] * x - y) ** 2, axis=-1) / energy
-    return np.where(valid, np.clip(cost, 0, 1), 1.0)
+        return np.ones(shape), np.zeros(shape), np.zeros(shape)
+    u = np.zeros_like(x) if directivity is None else np.asarray(directivity, float)
+    (g0, g1), (b0, b1) = GAIN_LIMITS, (DIRECTIVITY_DB if directivity is not None else (0.0, 0.0))
+    valid = np.isfinite(x).all(axis=-1) & np.isfinite(u).all(axis=-1)
+    x, u = np.where(np.isfinite(x), x, 0), np.where(np.isfinite(u), u, 0)
+    x, u = x - x.mean(axis=-1, keepdims=True), u - u.mean(axis=-1, keepdims=True)
+    xx, xu, uu = (x * x).sum(-1), (x * u).sum(-1), (u * u).sum(-1)
+    xy, uy = (x * y).sum(-1), (u * y).sum(-1)
+    # A convex quadratic on a box has its minimum inside or on an edge: try all of them.
+    cands = []
+    for g in (g0, g1):
+        b = np.divide(uy - g * xu, uu, out=np.zeros(shape), where=uu > 1e-12)
+        cands.append((np.full(shape, g), np.clip(b, b0, b1)))
+    for b in (b0, b1):
+        g = np.divide(xy - b * xu, xx, out=np.full(shape, g0), where=xx > 1e-12)
+        cands.append((np.clip(g, g0, g1), np.full(shape, b)))
+    det = xx * uu - xu * xu
+    ok = det > 1e-9 * np.maximum(xx * uu, 1e-30)
+    gi = np.divide(uu * xy - xu * uy, det, out=np.full(shape, g0), where=ok)
+    bi = np.divide(xx * uy - xu * xy, det, out=np.full(shape, b0), where=ok)
+    inside = ok & (gi >= g0) & (gi <= g1) & (bi >= b0) & (bi <= b1)
+    cands.append((np.where(inside, gi, g0), np.where(inside, bi, b0)))
+    q = np.stack([g * g * xx + 2 * g * b * xu + b * b * uu - 2 * g * xy - 2 * b * uy + energy for g, b in cands])
+    k = np.argmin(q, axis=0)
+    gain, b = np.choose(k, [g for g, _ in cands]), np.choose(k, [b for _, b in cands])
+    cost = np.clip(np.min(q, axis=0) / energy, 0, 1)
+    return np.where(valid, cost, 1.0), gain, b
+
+
+def shape_cost(predicted, observed, directivity=None):
+    """Residual fraction of the bounded level fit; 1 for gaps, anticorrelation or flat audio."""
+    return fit_level(predicted, observed, directivity)[0]
 
 
 def _assign(costs, weights=None):
@@ -259,27 +314,55 @@ def _assign(costs, weights=None):
     Repeating a bootstrap unit changes its weight, not its number of assignments.
     """
     K, M, A = costs.shape
-    weights = np.ones(K) if weights is None else np.asarray(weights)
-    per, assoc = np.ones((K, M)), np.full((K, M), -1, int)
-    for m in range(M):
-        C = np.concatenate([costs[:, m], np.ones((K, K))], axis=1)
-        rows, cols = linear_sum_assignment(C * weights[:, None])
-        for k, a in zip(rows, cols):
-            if a < A and C[k, a] < 1:
-                per[k, m], assoc[k, m] = C[k, a], a
+    weights = np.ones(K) if weights is None else np.asarray(weights, float)
+    if A == 0:
+        return np.ones((K, M)), np.full((K, M), -1, int)
+    arg = np.argmin(costs, axis=2)
+    low = np.take_along_axis(costs, arg[..., None], axis=2)[..., 0].astype(float)
+    per, assoc = np.where(low < 1, low, 1.0), np.where(low < 1, arg, -1)
+    # Each sound's own best flight is optimal unless two counted sounds want the same one.
+    active = np.flatnonzero(weights > 0)
+    clash = np.zeros(M, bool)
+    for i, a in enumerate(active):
+        for b in active[i + 1:]:
+            clash |= (assoc[a] == assoc[b]) & (assoc[a] >= 0)
+    n = len(active)
+    for m in np.flatnonzero(clash):
+        C = np.concatenate([costs[active, m], np.ones((n, n))], axis=1)
+        rows, cols = linear_sum_assignment(C * weights[active, None])
+        for r, a in zip(rows, cols):
+            k = active[r]
+            per[k, m], assoc[k, m] = (C[r, a], a) if a < A and C[r, a] < 1 else (1.0, -1)
     return per, assoc
 
 
-def score_grid(events, env, tracks, enu, observers, case, lags, shift_s=0, log=None):
-    """Compare entire padded event windows to each candidate; profile timing slack.
+def _assign_lags(costs, weights=None):
+    """Assignments for every (cell, shared clock offset); costs are sound x cell x offset x flight."""
+    K, M, L, A = costs.shape
+    per, assoc = _assign(costs.reshape(K, M * L, A), weights)
+    return per.reshape(K, M, L), assoc.reshape(K, M, L)
 
+
+def _best_offsets(per, weights=None):
+    """Best mean score per cell over the shared clock offsets, and the index of that offset."""
+    s = 1 - np.average(per, weights=weights, axis=0)
+    li = np.argmax(s, axis=1)
+    return s[np.arange(len(s)), li], li
+
+
+def score_grid(events, env, tracks, enu, observers, case, lags, alpha=0.0, shift_s=0, log=None):
+    """Compare entire padded event windows to each candidate at every shared clock offset.
+
+    Returns costs (sound x cell x offset x flight) and the one-to-one assignment per cell and offset.
     Every null uses the same candidates and selection procedure. Only the sound
     times move, wrapped as whole windows so no discontinuity is spliced into one.
     """
     et = np.array(env['t_s'])
-    K, M, A = len(events), len(observers), len(tracks)
-    costs = np.ones((K, M, A), np.float32)
-    best_lags = np.zeros((K, M, A), np.float32)
+    K, M, L, A = len(events), len(observers), len(lags), len(tracks)
+    if K * M * L * A > 6e7:
+        raise JetError(f'{K} sounds x {M} cells x {L} clock offsets x {A} flights is too large; increase --step, '
+                       'reduce --timing-slack or select fewer sounds')
+    costs = np.ones((K, M, L, A), np.float32)
     duration = et[-1] - et[0]
     for k, event in enumerate(events):
         a, b = max(et[0], event['t_start'] - 25), min(et[-1], event['t_end'] + 25)
@@ -290,28 +373,33 @@ def score_grid(events, env, tracks, enu, observers, case, lags, shift_s=0, log=N
             a_new = et[0] + (a - et[0] + shift_s) % duration
             rel = rel + a_new - a
         rx = case.t0 + rel
+        compared = 0
         for ai, (track, traj) in enumerate(tracks):
             # Emission precedes reception; reject no-support hypotheses without extrapolation.
-            if traj.t[-1] < rx[0] - max(lags) - 180 or traj.t[0] > rx[-1] - min(lags):
+            lo, hi = rx[0] - max(lags) - 180, rx[-1] - min(lags)
+            if traj.t[-1] < lo or traj.t[0] > hi:
                 continue
+            P = traj.P[(traj.t >= lo) & (traj.t <= hi)]
+            P = P[np.isfinite(P).all(axis=1)]
+            # Skip flights that never come within the audibility cutoff of the search disc (exact speed-up).
+            if not len(P) or np.min(np.hypot(P[:, 0], P[:, 1])) > case.radius_m + MAX_RANGE_M:
+                continue
+            compared += 1
             c = physics.path_sound_speed(case.ground_temp_c, float(np.nanmedian(observers[:, 2])),
                                          float(np.nanmedian(traj.P[:, 2])))
-            for start in range(0, M, 128):
-                stop = min(M, start + 128)
-                for lag in lags:
-                    model = range_level(traj, observers[start:stop], rx - lag, c)
-                    cc = shape_cost(model, y)
+            for start in range(0, M, 256):
+                stop = min(M, start + 256)
+                for li, lag in enumerate(lags):
+                    x, u, R = level_terms(traj, observers[start:stop], rx - lag, c, alpha)
+                    z, ue = above_floor(x, u, y.max())
+                    cc = shape_cost(z, y, ue)
                     # This is an audibility search cutoff, not a measured sound range.
-                    close = np.max(model, axis=-1) >= -20 * np.log10(40000)
-                    cc = np.where(close, cc, 1)
-                    old = costs[k, start:stop, ai]
-                    improve = cc < old
-                    best_lags[k, start:stop, ai][improve] = lag
-                    costs[k, start:stop, ai] = np.minimum(old, cc)
+                    near = np.min(np.where(np.isfinite(R), R, np.inf), axis=-1) <= MAX_RANGE_M
+                    costs[k, start:stop, li, ai] = np.where(near, cc, 1)
         if log:
-            log(f"  {event['id']}: compared {A} high/fast flight tracks")
-    per, assoc = _assign(costs)
-    return costs, per, assoc, best_lags
+            log(f"  {event['id']}: compared {compared} of {A} high/fast flight tracks")
+    per, assoc = _assign_lags(costs)
+    return costs, per, assoc
 
 
 def _region(E, N, selected, enu, step):
@@ -324,11 +412,11 @@ def _region(E, N, selected, enu, step):
             'n_cells': int(selected.sum()), 'note': 'Union of near-best sampled cells; bbox can span disconnected modes.'}
 
 
-def match(case, env, events, step_m=2000, timing_slack_s=45, log=print):
+def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
     if not np.isfinite(step_m) or step_m < 250:
         raise JetError('--step must be finite and at least 250 m (this is a coarse experiment)')
-    if not np.isfinite(timing_slack_s) or not 0 <= timing_slack_s <= 180:
-        raise JetError('--timing-slack must be between 0 and 180 seconds')
+    if not np.isfinite(timing_slack_s) or not 0 <= timing_slack_s <= 60:
+        raise JetError('--timing-slack must be between 0 and 60 seconds')
     enu = geo.ENU(*case.center, 0)
     if step_m > case.radius_m:
         raise JetError('--step must not exceed the search radius')
@@ -363,34 +451,42 @@ def match(case, env, events, step_m=2000, timing_slack_s=45, log=print):
             traj = physics.Trajectory(track, enu, case.t0 - 600, case.window[1] + 600, dt=2, geoid_n=0)
         except ValueError:
             continue
+        if not np.isfinite(traj.V[:, 0]).any():
+            continue                                    # no usable fixes inside the recording window
         speed = np.nanmedian(np.linalg.norm(traj.V[:, :2], axis=1))
-        if np.nanmedian(track.alt_msl_m) >= 4000 and 140 <= speed <= 340:
+        closest = np.nanmin(np.hypot(traj.P[:, 0], traj.P[:, 1]))
+        if np.nanmedian(track.alt_msl_m) >= 4000 and 140 <= speed <= 340 and closest <= case.radius_m + MAX_RANGE_M:
             tracks.append((track, traj))
     if not tracks:
         return {'status': 'no_candidate_tracks', 'summary': 'No high-altitude, fast flight tracks in the supplied data.', 'location_estimate': None}, None
     lo, hi = case.delay_prior
-    lags = np.unique(np.r_[np.arange(lo - timing_slack_s, hi + timing_slack_s, 10), hi + timing_slack_s])
-    log(f'experimental jet matching: {len(events)} sounds, {len(tracks)} tracks, {len(E)} cells, {len(lags)} timing shifts')
-    costs, per, assoc, lag = score_grid(events, env, tracks, enu, observers, case, lags, log=log)
-    scores = 1 - per.mean(axis=0)
+    lags = np.arange(lo - timing_slack_s, hi + timing_slack_s + LAG_STEP_S / 2, LAG_STEP_S)
+    alpha = float(physics.absorption_db_per_m(ABSORPTION_HZ, case.ground_temp_c))
+    log(f'experimental jet matching: {len(events)} sounds, {len(tracks)} tracks, {len(E)} cells, '
+        f'{len(lags)} shared clock offsets, absorption {alpha * 1000:.2f} dB/km')
+    costs, per_l, assoc_l = score_grid(events, env, tracks, enu, observers, case, lags, alpha, log=log)
+    scores, lag_i = _best_offsets(per_l)
+    cells = np.arange(len(E))
+    per, assoc = per_l[:, cells, lag_i], assoc_l[:, cells, lag_i]
     best = int(np.argmax(scores))
+    best_lag = float(lags[lag_i[best]])
     accepted = per[:, best] <= 0.5
     supported = int(accepted.sum())
     near = scores >= scores[best] - 0.05
     nulls = []
     for fraction in (0.25, 0.5, 0.75):
         log(f'  time-shift null {fraction:.0%}')
-        _, np_, _, _ = score_grid(events, env, tracks, enu, observers, case, lags,
-                                  shift_s=fraction * (env['t_s'][-1] - env['t_s'][0]))
-        ns = 1 - np_.mean(axis=0)
+        _, np_, _ = score_grid(events, env, tracks, enu, observers, case, lags, alpha,
+                               shift_s=fraction * (env['t_s'][-1] - env['t_s'][0]))
+        ns, _ = _best_offsets(np_)
         nulls.append({'shift_s': fraction * (env['t_s'][-1] - env['t_s'][0]), 'best_score': float(ns.max())})
     # Reassign on each leave-one-out/whole-event bootstrap, retaining one-to-one associations.
     loo = []
     if len(events) >= 2:
         for k, e in enumerate(events):
             weights = np.ones(len(events)); weights[k] = 0
-            pp, _ = _assign(costs, weights)
-            ss = 1 - np.average(pp, weights=weights, axis=0)
+            pp, _ = _assign_lags(costs, weights)
+            ss, _ = _best_offsets(pp, weights)
             i = int(np.argmax(ss))
             loo.append({'left_out': e['id'], 'movement_m': float(np.hypot(E[i] - E[best], N[i] - N[best]))})
     boot = []
@@ -399,8 +495,8 @@ def match(case, env, events, step_m=2000, timing_slack_s=45, log=print):
         rng = np.random.default_rng(0)
         for _ in range(100):
             weights = np.bincount(rng.choice(active, size=len(active)), minlength=len(events))
-            pp, _ = _assign(costs, weights)
-            ss = 1 - np.average(pp, weights=weights, axis=0)
+            pp, _ = _assign_lags(costs, weights)
+            ss, _ = _best_offsets(pp, weights)
             i = int(np.argmax(ss))
             boot.append(float(np.hypot(E[i] - E[best], N[i] - N[best])))
     flags = []
@@ -416,10 +512,8 @@ def match(case, env, events, step_m=2000, timing_slack_s=45, log=print):
         flags.append('At least one fitted sound is clipped, abrupt, long or has limited spectral support.')
     if loo and max(x['movement_m'] for x in loo) > 5000:
         flags.append('Leaving out one sound moves the top grid cell by more than 5 km.')
-    if any(accepted[k] and assoc[k, best] >= 0 and
-           min(abs(lag[k, best, assoc[k, best]] - lags[0]), abs(lag[k, best, assoc[k, best]] - lags[-1])) < 5
-           for k in range(len(events))):
-        flags.append('A fitted timing shift reaches its allowed limit; the chosen slack may truncate alternatives.')
+    if supported and len(lags) > 1 and min(abs(best_lag - lags[0]), abs(best_lag - lags[-1])) < LAG_STEP_S / 2:
+        flags.append('The fitted clock offset reaches its allowed limit; the chosen slack may truncate alternatives.')
     verdict = 'failed' if not supported else ('ambiguous' if flags else 'exploratory')
     assignments = []
     for k, e in enumerate(events):
@@ -427,20 +521,23 @@ def match(case, env, events, step_m=2000, timing_slack_s=45, log=print):
         assignment = {'event': e['id'], 'icao24': tracks[ai][0].icao24 if ai >= 0 else None,
                             'aircraft': tracks[ai][0].label if ai >= 0 else None,
                             'shape_score': float(1 - per[k, best]), 'passes_shape_screen': bool(accepted[k]),
-                            'timing_shift_s': float(lag[k, best, ai]) if ai >= 0 else None}
+                            'timing_shift_s': best_lag if ai >= 0 else None}
         if ai >= 0:
             rel, observed = _observations(env, e)
             traj = tracks[ai][1]
             c = physics.path_sound_speed(case.ground_temp_c, float(np.nanmedian(observers[:, 2])),
                                          float(np.nanmedian(traj.P[:, 2])))
-            predicted = range_level(traj, observers[best:best + 1], case.t0 + rel - lag[k, best, ai], c)[0]
-            x, y = predicted - predicted.mean(), observed - observed.mean()
-            gain = float(np.clip(np.dot(x, y) / max(np.dot(x, x), 1e-12), 0, 2))
+            x, u, _ = level_terms(traj, observers[best:best + 1], case.t0 + rel - best_lag, c, alpha)
+            x, u = above_floor(x, u, observed.max())
+            _, gain, b = fit_level(x[0], observed, u[0])
+            x, u = x[0] - x[0].mean(), u[0] - u[0].mean()
             assignment.update({'t_s': rel.tolist(), 'observed_db': observed.tolist(),
-                               'predicted_db': (observed.mean() + gain * x).tolist(), 'shape_gain': gain})
+                               'predicted_db': (observed.mean() + gain * x + b * u).tolist(),
+                               'shape_gain': float(gain), 'directivity_db': float(b)})
         assignments.append(assignment)
     result = {'status': verdict, 'summary': f'{supported}/{len(events)} broadband events pass the experimental shape screen.',
               'location_estimate': None, 'best_score': float(scores[best]), 'n_supported': supported,
+              'clock_offset_s': best_lag if supported else None,
               'best_grid_hypothesis': {'lat': float(lat[best]), 'lon': float(lon[best])} if supported else None,
               'compatible_region': _region(E, N, near, enu, step_m) if supported else None,
               'flags': flags, 'assignments': assignments, 'null_tests': nulls,
@@ -449,10 +546,13 @@ def match(case, env, events, step_m=2000, timing_slack_s=45, log=print):
                             'bootstrap_grid_90_m': float(np.percentile(boot, 90)) if boot else None,
                             'note': 'Uncalibrated grid stability only, conditional on the event/model assumptions.'},
               'settings': {'step_m': step_m, 'timing_slack_s': timing_slack_s, 'lag_range_s': [float(lags.min()), float(lags.max())],
-                           'min_altitude_m': 4000, 'ground_speed_mps': [140, 340], 'max_slant_range_m': 40000,
+                           'lag_step_s': LAG_STEP_S, 'clock_offset': 'one offset shared by all sounds',
+                           'absorption_db_per_km': round(alpha * 1000, 3), 'absorption_frequency_hz': ABSORPTION_HZ,
+                           'gain_limits': list(GAIN_LIMITS), 'directivity_db_limits': list(DIRECTIVITY_DB),
+                           'min_altitude_m': 4000, 'ground_speed_mps': [140, 340], 'max_slant_range_m': MAX_RANGE_M,
                            'near_best_score_tolerance': 0.05, 'bootstrap_resamples': len(boot)}}
     grid = {'E_m': E, 'N_m': N, 'lat': lat, 'lon': lon, 'score': scores,
-            'near_best': near, 'per_event_cost': per, 'flight_index': assoc}
+            'near_best': near, 'per_event_cost': per, 'flight_index': assoc, 'clock_offset_s': lags[lag_i]}
     return result, grid
 
 
@@ -506,7 +606,7 @@ def report(path, env, events, result, grid=None):
     Path(path).write_text(html.replace('</body>', notes + '</body>'), encoding='utf-8')
 
 
-def run(case, analyse_only=False, windows=None, ids=None, step_m=2000, timing_slack_s=45, log=print, review_labels=None):
+def run(case, analyse_only=False, windows=None, ids=None, step_m=2000, timing_slack_s=5, log=print, review_labels=None):
     case.audio_info()
     out = case.dir / 'jets'
     out.mkdir(exist_ok=True)
