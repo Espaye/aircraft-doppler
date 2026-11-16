@@ -146,8 +146,9 @@ rules out flat or inverted fits. The model still omits changing thrust, wind ref
 and phone gain control. Sound travel time is explicitly included, so the observed peak need not coincide with
 visual overhead passage.
 
-Candidate tracks have median MSL altitude at least 4000 m and median horizontal speed 140-340 m/s. These filters
-select high/fast traffic, not a known aircraft class. The audibility hypothesis cuts off best slant ranges above
+Candidate tracks have median MSL altitude at least 4000 m and median horizontal speed 140-340 m/s while they
+are within the search radius plus 25 km during the recording window; the rest of a downloaded track (a climb or
+descent far away) does not count. These filters select high/fast traffic, not a known aircraft class. The audibility hypothesis cuts off best slant ranges above
 25 km (about 40 dB of absorption alone); flight retrieval covers the prior search radius plus 40 km, with
 margin. A coarse search covers the prior disc (2 km default spacing). All sounds share one recording clock offset,
 because one phone clock records them all: it is searched in 1 s steps over the case clock prior plus 5 s either

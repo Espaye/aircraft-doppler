@@ -81,6 +81,21 @@ def test_range_envelope_uses_sound_travel_time():
     assert rx[np.argmax(predicted)] == pytest.approx(1000 + 10000 / c, abs=.3)
 
 
+def test_jet_candidates_are_judged_while_within_reach():
+    # The whole downloaded track is mostly the far-away part; only the part within reach may decide.
+    enu = geo.ENU(52, 5)
+    t = np.arange(0., 1201., 2.)
+    x = (t - 600) * 230.
+    for near_alt, far_alt, expect in ((10000, 1500, True), (1500, 10000, False)):
+        lat, lon, _ = enu.to_geodetic(np.column_stack([x, np.full_like(x, 5000), np.zeros_like(x)]))
+        alt = np.where(np.abs(x) < 30000, near_alt, far_alt).astype(float)
+        tr = adsb.Track('abc123', 'abc123', 'A320', None, 'synthetic', t, lat, lon, alt, np.full(len(t), 'geom'))
+        traj = physics.Trajectory(tr, enu, 0, 1200, dt=2)
+        assert np.median(alt) == far_alt
+        assert jets.jet_candidate(traj, enu, 40000) is expect
+    assert jets.jet_candidate(traj, enu, 1000) is False        # never closer than 5 km
+
+
 def test_gaps_anticorrelation_and_flat_envelopes_cannot_win():
     y = np.array([0, 3, 6, 3, 0.])
     assert jets.shape_cost(y[None] + 70, y)[0] < 1e-10

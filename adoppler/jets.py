@@ -25,6 +25,8 @@ GAIN_LIMITS = (0.3, 2.0)         # modest envelope compression or extra attenuat
 DIRECTIVITY_DB = (-8.0, 4.0)     # level change per unit cos(angle between flight direction and observer)
 MAX_RANGE_M = 25000              # audibility cutoff: about 40 dB of 354 Hz absorption alone at 15 C
 LAG_STEP_S = 1.0                 # spacing of the shared clock offsets that are searched
+MIN_ALTITUDE_M = 4000            # candidate jets: median MSL altitude while within reach of the search area
+SPEED_MPS = (140, 340)           # and median horizontal speed over that same part of the track
 LIMITATIONS = [
     'Experimental envelope matching, not validated on real high-altitude jets.',
     'Impact screening is a relative heuristic; listening labels are human impressions, not verified identities.',
@@ -255,6 +257,20 @@ def above_floor(x, u, peak_db):
     return z, u * (1 - 10 ** (-z / 10))
 
 
+def jet_candidate(traj, enu, reach_m):
+    """High, fast traffic while within reach_m (horizontal) of the search centre during the recording window.
+
+    Judged only over that part of the track: the median of a whole downloaded track mostly reflects how much
+    of its climb or descent elsewhere happened to be downloaded."""
+    h = np.hypot(traj.P[:, 0], traj.P[:, 1])
+    near = np.isfinite(h) & (h <= reach_m) & np.isfinite(traj.P[:, 2]) & np.isfinite(traj.V[:, 0])
+    if not near.any():
+        return False
+    altitude = np.median(enu.to_geodetic(traj.P[near])[2])
+    speed = np.median(np.linalg.norm(traj.V[near, :2], axis=1))
+    return bool(altitude >= MIN_ALTITUDE_M and SPEED_MPS[0] <= speed <= SPEED_MPS[1])
+
+
 def range_level(traj, observers, t_rx, c):
     """Fixed-source inverse-square intensity in dB, including retarded emission time."""
     return level_terms(traj, observers, t_rx, c)[0]
@@ -451,11 +467,7 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
             traj = physics.Trajectory(track, enu, case.t0 - 600, case.window[1] + 600, dt=2, geoid_n=0)
         except ValueError:
             continue
-        if not np.isfinite(traj.V[:, 0]).any():
-            continue                                    # no usable fixes inside the recording window
-        speed = np.nanmedian(np.linalg.norm(traj.V[:, :2], axis=1))
-        closest = np.nanmin(np.hypot(traj.P[:, 0], traj.P[:, 1]))
-        if np.nanmedian(track.alt_msl_m) >= 4000 and 140 <= speed <= 340 and closest <= case.radius_m + MAX_RANGE_M:
+        if jet_candidate(traj, enu, case.radius_m + MAX_RANGE_M):
             tracks.append((track, traj))
     if not tracks:
         return {'status': 'no_candidate_tracks', 'summary': 'No high-altitude, fast flight tracks in the supplied data.', 'location_estimate': None}, None
@@ -549,7 +561,9 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
                            'lag_step_s': LAG_STEP_S, 'clock_offset': 'one offset shared by all sounds',
                            'absorption_db_per_km': round(alpha * 1000, 3), 'absorption_frequency_hz': ABSORPTION_HZ,
                            'gain_limits': list(GAIN_LIMITS), 'directivity_db_limits': list(DIRECTIVITY_DB),
-                           'min_altitude_m': 4000, 'ground_speed_mps': [140, 340], 'max_slant_range_m': MAX_RANGE_M,
+                           'min_altitude_m': MIN_ALTITUDE_M, 'ground_speed_mps': list(SPEED_MPS),
+                           'candidate_filter': 'medians while within the search radius plus the slant range cutoff',
+                           'max_slant_range_m': MAX_RANGE_M,
                            'near_best_score_tolerance': 0.05, 'bootstrap_resamples': len(boot)}}
     grid = {'E_m': E, 'N_m': N, 'lat': lat, 'lon': lon, 'score': scores,
             'near_best': near, 'per_event_cost': per, 'flight_index': assoc, 'clock_offset_s': lags[lag_i]}
