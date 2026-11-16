@@ -69,6 +69,12 @@ The reported radii come from resampling, not from the optimiser:
 - **Time-shift null tests**: all events are moved against the flight data (by a quarter, half and three
   quarters of the recording, wrapped around) and searched again. If shifted data fit almost as well as the real data, the match may be coincidence.
 - **Alternatives**: the best other modes, with their cost and number of explained events.
+- **Coverage gaps**: for an event that stays unexplained, `match` lists aircraft whose ADS-B track has no fixes
+  for more than 150 s around the event's closest approach but that could have made it: ground speed before and
+  after the gap within -25 %/+33 % of the Doppler speed, steady progress across the gap, height not far above
+  the Doppler closest distance, and able to reach the search area in time. Low aircraft often drop out of
+  receiver coverage exactly when they pass close to a microphone. Their path inside the gap is unknown, so they
+  are reported (`events[].coverage_gap_candidates` in `result.json`) and never used for the estimate.
 
 `assess()` turns these into one verdict (`ok`, `weak`, `ambiguous`, `failed`) and lists every reason.
 

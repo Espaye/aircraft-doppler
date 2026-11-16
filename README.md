@@ -217,6 +217,10 @@ The result card gives a position, a 68% and 90% radius, and a **verdict**:
 | `ambiguous` | another area fits about as well, or time-shifted flight data fits almost as well: no reliable location |
 | `failed` | fewer than two passes explained |
 
+If a clear low pass stays unexplained, look for `coverage gap` lines in the log (and
+`coverage_gap_candidates` in `match/result.json`): an aircraft whose ADS-B track drops out around that time
+with a matching speed was probably the source, but without its path it cannot be used for the location.
+
 The radii come from resampling whole passes (bootstrap) and leaving each pass out. They do not come from the
 optimiser's precision, which is always far too optimistic. Every flag behind the verdict is listed with the
 result. The prediction is stamped with a SHA-256 hash when it is made, and `adoppler validate --lat --lon

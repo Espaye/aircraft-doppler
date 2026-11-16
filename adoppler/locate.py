@@ -239,6 +239,15 @@ def run(case, ids=None, min_score=None, step=None, force=False, workers=None, n_
              'n_candidates': len(pb.cands[k])}
         if arg[k] >= 0:
             d.update(_simulate(pb, k, int(arg[k]), obs, dl, tc))
+        if not d['explained']:
+            gaps = match.coverage_gaps(tracks, ev, pb.enu, case.radius_m + 15000, geoid_n, case.delay_prior)
+            if gaps:
+                d['coverage_gap_candidates'] = gaps
+                for g_ in gaps[:3]:
+                    log(f"  coverage gap: {ev['id']} not explained; {g_['icao24']} ({g_['type'] or 'type unknown'}) has no ADS-B "
+                        f"fixes for {g_['gap_s']} s around its closest approach, ground speed "
+                        f"{g_['speed_before_mps']}/{g_['speed_after_mps']} m/s before/after vs Doppler "
+                        f"{g_['doppler_speed_mps']} m/s: a possible source that cannot be matched without its path")
         per_event.append(d)
     lat, lon = _latlon(pb.enu, [E], [N])
     blat, blon = _latlon(pb.enu, boots[:200, 0], boots[:200, 1])

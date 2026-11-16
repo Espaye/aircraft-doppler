@@ -36,8 +36,10 @@ def load_events(events_json, ids=None, min_score=0.0, labels=('aircraft',), max_
             t = np.asarray(x['t'], float) + t0; f = np.asarray(x['f'], float); w = np.clip(np.asarray(x['snr']) / 10, 0.3, 3)
             k = max(1, len(t) // max_pts)
             cur.append((t[::k], f[::k], w[::k]))
+        fit = e.get('fit')
         out.append({'id': e['id'], 'curves': cur, 't_start': e['t_start'] + t0, 't_end': e['t_end'] + t0,
-                    'fit': e.get('fit'), 'manual': bool(man is not None and man.exists())})
+                    'fit': fit, 'tau_c_utc': fit['tau_c'] + t0 if fit else None,
+                    'manual': bool(man is not None and man.exists())})
     return out
 
 
@@ -66,6 +68,53 @@ def candidate_aircraft(tracks, ev, enu, max_horiz_m, geoid_n=0.0, max_alt_m=1300
                     continue
         out.append(tr)
     return out
+
+
+def coverage_gaps(tracks, ev, enu, max_horiz_m, geoid_n=0.0, delta_range=(-2, 10), max_gap_s=150.0):
+    """Aircraft whose track has no ADS-B fixes around the event's closest approach but that could have caused it.
+
+    Low aircraft often drop out of receiver coverage. Their path inside the gap is unknown, so they cannot be
+    matched; they are reported instead of silently ignored. A track qualifies when the gap (> max_gap_s) spans
+    the closest approach, its ground speeds before and after the gap are within -25 %/+33 % of the Doppler speed,
+    it kept flying across the gap (straight-line progress at least 60 % of that speed), its height is not far
+    above the Doppler closest distance and it can reach the search area in time."""
+    fit = ev.get('fit') or {}
+    if ev.get('tau_c_utc') is None or not fit.get('v'):
+        return []
+    tc = ev['tau_c_utc'] - 0.5 * (delta_range[0] + delta_range[1])     # acoustic time = clock time - delta
+    out = []
+    for tr in tracks:
+        ok = np.isfinite(tr.lat) & np.isfinite(tr.alt_msl_m) & (tr.alt_kind != 'ground')
+        t = tr.t[ok]
+        i = np.searchsorted(t, tc)
+        if i == 0 or i == len(t) or t[i] - t[i - 1] <= max_gap_s:
+            continue
+        P = enu.from_geodetic(tr.lat[ok], tr.lon[ok], geo.msl_to_ellipsoid(tr.alt_msl_m[ok], geoid_n))
+        ta, tb, A, B = t[i - 1], t[i], P[i - 1], P[i]
+
+        def speed(sel):
+            if sel.sum() < 2:
+                return np.nan
+            q, tt = P[sel], t[sel]
+            return float(np.hypot(*np.diff(q[:, :2], axis=0).T).sum() / (tt[-1] - tt[0]))
+        sp = [speed((t >= ta - 120) & (t <= ta)), speed((t >= tb) & (t <= tb + 120))]
+        known = [x for x in sp if np.isfinite(x) and x > 0]
+        if not known or not all(0.75 <= fit['v'] / x <= 1.33 for x in known):
+            continue
+        vmax = 1.2 * max(known + [fit['v']])
+        if not 0.6 * min(known) * (tb - ta) <= np.hypot(*(B - A)[:2]) <= vmax * (tb - ta):
+            continue                    # it landed, waited or circled in the gap, or the fixes are inconsistent
+        if min(A[2], B[2]) > fit.get('d', 0) + 300:
+            continue
+        if (np.hypot(*A[:2]) - vmax * (tc - ta) > max_horiz_m) or (np.hypot(*B[:2]) - vmax * (tb - tc) > max_horiz_m):
+            continue
+        out.append({'icao24': tr.icao24, 'callsign': tr.callsign, 'type': tr.icao_type, 'gap_s': round(float(tb - ta)),
+                    'last_fix_s_before': round(float(tc - ta)), 'next_fix_s_after': round(float(tb - tc)),
+                    'speed_before_mps': round(sp[0], 1) if np.isfinite(sp[0]) else None,
+                    'speed_after_mps': round(sp[1], 1) if np.isfinite(sp[1]) else None,
+                    'doppler_speed_mps': round(float(fit['v']), 1), 'doppler_distance_m': round(float(fit.get('d', np.nan))),
+                    'alt_before_m': round(float(tr.alt_msl_m[ok][i - 1])), 'alt_after_m': round(float(tr.alt_msl_m[ok][i]))})
+    return sorted(out, key=lambda x: x['last_fix_s_before'] + x['next_fix_s_after'])
 
 
 # ---------------------------------------------------------------- grid search
