@@ -44,13 +44,61 @@ def cmd_analyse(a):
     pipeline.analyse(_case(a), force=a.force)
 
 
+def cmd_classify(a):
+    from . import classify
+    c = _case(a)
+    r = classify.run(c)
+    print(f"screened {len(r['sources'])} sounds: jets {', '.join(r['jets']) or 'none'}; propeller aircraft "
+          f"{', '.join(r['props']) or 'none'}; saved {c.dir / 'classify' / 'sources.json'}")
+
+
+def _screened(c, kind):
+    from . import classify
+    try:
+        return classify.load_sources(c, kind)
+    except ValueError as e:
+        raise case_mod.CaseError(str(e))
+
+
+def cmd_jets(a):
+    from . import jets
+    c = _case(a)
+    ids = a.events
+    if a.classified:
+        if a.events or a.review_labels or a.window:
+            raise case_mod.CaseError('--classified cannot be combined with --events, --review-labels or --window')
+        ids = _screened(c, 'jet')
+        if not ids:
+            raise case_mod.CaseError('the screening found no jet-like sounds')
+    try:
+        r = jets.run(c, analyse_only=a.analyse_only, windows=a.window, ids=ids,
+                     step_m=a.step, timing_slack_s=a.timing_slack, review_labels=a.review_labels)
+    except jets.JetError as e:
+        raise case_mod.CaseError(str(e))
+    print(f"experimental assessment: {r['status']}")
+    for flag in r.get('flags', []):
+        print(f'  - {flag}')
+    region = r.get('compatible_region')
+    if region:
+        print(f"near-best sampled region: {region['lat_min']:.3f} to {region['lat_max']:.3f} N, "
+              f"{region['lon_min']:.3f} to {region['lon_max']:.3f} E; "
+              f"{region['sampled_area_km2']:.0f} square km (not a confidence region)")
+
+
 def cmd_adsb(a):
     pipeline.fetch_adsb(_case(a), force=a.force, source=a.source)
 
 
 def cmd_match(a):
     c = _case(a)
-    r = pipeline.match(c, force=a.force, workers=a.workers, ids=a.events)
+    ids = a.events
+    if a.classified:
+        if a.events:
+            raise case_mod.CaseError('--classified cannot be combined with --events')
+        ids = _screened(c, 'prop')
+        if not ids:
+            raise case_mod.CaseError('the screening linked no Doppler event to a propeller aircraft')
+    r = pipeline.match(c, force=a.force, workers=a.workers, ids=ids)
     _print_result(r)
 
 
@@ -133,6 +181,16 @@ def main(argv=None):
     q.add_argument('--seed', type=int, default=1)
     q = add('analyse', cmd_analyse, 'detect Doppler events in the audio')
     q.add_argument('--force', action='store_true', help='recompute')
+    add('classify', cmd_classify, 'screen sounds: jet, propeller aircraft, or road traffic and other noise')
+    q = add('jets', cmd_jets, 'experimental broadband sound screening and coarse flight-envelope matching')
+    q.add_argument('--analyse-only', action='store_true', help='inspect audio without flight matching')
+    q.add_argument('--window', nargs=2, type=float, action='append', metavar=('START', 'END'),
+                   help='manually select a sound window in seconds from recording start; repeat for separate sounds')
+    q.add_argument('--review-labels', help='listening-label JSON export; use only explicit likely_jet labels')
+    q.add_argument('--events', nargs='+', help='use only these broadband event IDs (J01, J02, ...)')
+    q.add_argument('--classified', action='store_true', help='use only the sounds `adoppler classify` screened as jets')
+    q.add_argument('--step', type=float, default=2000, help='coarse search grid spacing in metres (default 2000)')
+    q.add_argument('--timing-slack', type=float, default=5, help='slack of the one clock offset shared by all sounds beyond the clock prior, seconds (default 5)')
     q = add('adsb', cmd_adsb, 'fetch historical ADS-B tracks for the recording')
     q.add_argument('--source', choices=['auto', 'adsb.lol', 'adsb.aero', 'file'])
     q.add_argument('--force', action='store_true', help='fetch again')
@@ -143,6 +201,8 @@ def main(argv=None):
         q.add_argument('--workers', type=int, help='parallel processes (default: CPUs - 1)')
         if name == 'match':
             q.add_argument('--events', nargs='+', help='use only these event ids')
+            q.add_argument('--classified', action='store_true',
+                           help='use only Doppler events that `adoppler classify` linked to propeller aircraft')
     q = add('validate', cmd_validate, 'compare the stored result with a reference position')
     q.add_argument('--lat', type=float); q.add_argument('--lon', type=float)
     q.add_argument('--source', help='where the reference comes from (stored with the validation)')

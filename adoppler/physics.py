@@ -24,6 +24,18 @@ def path_sound_speed(t_ground_c, h_ground_m, h_src_m):
     return sound_speed(t_ground_c - config.LAPSE_K_PER_M * np.maximum(z_mid, 0))
 
 
+def absorption_db_per_m(f_hz, t_c=15.0, rh=70.0, p_kpa=101.325):
+    """Pure-tone atmospheric absorption (ISO 9613-1) in dB per metre at temperature, humidity and pressure."""
+    T, T0, T01 = t_c + 273.15, 293.15, 273.16
+    pa = p_kpa / 101.325
+    h = rh * 10 ** (-6.8346 * (T01 / T) ** 1.261 + 4.6151) / pa
+    fr_o = pa * (24 + 4.04e4 * h * (0.02 + h) / (0.391 + h))
+    fr_n = pa * (T / T0) ** -0.5 * (9 + 280 * h * np.exp(-4.170 * ((T / T0) ** (-1 / 3) - 1)))
+    f2 = np.asarray(f_hz, float) ** 2
+    return 8.686 * f2 * (1.84e-11 / pa * (T / T0) ** 0.5 + (T / T0) ** -2.5 * (
+        0.01275 * np.exp(-2239.1 / T) / (fr_o + f2 / fr_o) + 0.1068 * np.exp(-3352.0 / T) / (fr_n + f2 / fr_n)))
+
+
 class Trajectory:
     """Aircraft trajectory on a uniform time grid in ENU, with smoothed velocity. NaN where data has gaps."""
 
