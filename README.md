@@ -103,6 +103,28 @@ Every stage caches its output in the case folder, so you can stop and resume. `-
 `adoppler status <case>` shows what is done. In the browser you can listen to each event, see the measured
 curve against the predicted one, leave events out, or draw a curve by hand where detection failed.
 
+### Which sounds are aircraft? (`classify`)
+
+A recording near a road holds many more cars and trucks than aircraft. `classify` labels every sustained sound
+as **jet**, **prop** (propeller aircraft), **handling** (phone handling, impacts, wind on the microphone) or
+**not_aircraft** (road traffic and other noise), and says why:
+
+```sh
+adoppler analyse cases/garden       # tonal Doppler events (needed to recognise propeller aircraft)
+adoppler classify cases/garden      # writes cases/garden/classify/sources.json
+adoppler match cases/garden --classified   # match only the Doppler events linked to propeller aircraft
+adoppler jets cases/garden --classified    # match only the sounds screened as jets
+```
+
+The rules are physical and readable rather than a trained model: a jet at cruise height arrives as a smooth,
+slow rise and fall with no engine tones and almost no sound above 1 kHz (the air absorbs it); a propeller aircraft
+carries a long, complete series of harmonics with a gentle Doppler shift; road vehicles fluctuate, pass quickly,
+or carry engine tones without such a series. They were set on one recording whose 16 sounds the owner checked
+against Flightradar while listening (2 jets, 2 propeller aircraft, 11 road or handling sounds; all 15 labelled
+sounds screened correctly). On a second recording with unverified labels, all 5 non-aircraft sounds were rejected,
+but both sounds the owner thought were jets were missed (one is cut off by the start of the recording, the other
+rises and falls within about 20 s). Treat it as a strong filter, not a verdict: listen to what it keeps and rejects.
+
 ### Experimental high-altitude jet screening
 
 The normal detector is designed for narrow engine/propeller tones. An audible jet roar can be present without
@@ -131,8 +153,8 @@ Short impacts are now checked at approximately 0.1 s resolution using relative c
 cutoff. The report shows impact flags, spectral balance and rapid level changes. Red spans mark suspect impacts;
 a separate green envelope interpolates the affected one-second band measurements before smoothing. Matching
 omits samples touching those spans. Original audio and original candidate windows are preserved: an aircraft
-can overlap a bump, and a smooth road vehicle can still pass this screening. These features are not a trained
-jet/road classifier.
+can overlap a bump, and a smooth road vehicle can still pass this screening. `classify` (above) separates jets
+from traffic; `jets --classified` uses its picks.
 
 If you have a listening-page JSON export, select its explicit `likely_jet` labels with:
 

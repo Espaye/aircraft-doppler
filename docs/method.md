@@ -104,7 +104,7 @@ envelope, in uncalibrated relative dB. It is neither sound-pressure level nor an
 
 Prominent sustained activity produces unclassified candidates. Overlapping automatic spans are merged;
 manual windows are supported. Recording-edge clipping, rapid onsets, very long events and limited frequency
-support are flagged. The method does not yet distinguish aircraft from wind, vehicles or microphone handling.
+support are flagged. Section 8 (`classify`) separates jets and propeller aircraft from road traffic and handling.
 
 A second, faster view computes RMS in roughly 0.1 s frames (rounded sample edges). A frame more than 8 dB
 above its 51-frame local median and with an adjacent-frame jump above 8 dB is marked as a possible impact.
@@ -166,3 +166,42 @@ Our inverse-range envelope is a deliberately limited hypothesis, not an implemen
 No public server endpoints or browser UI behavior change. The private standalone HTML report embeds the installed
 Plotly library and uses no map tiles. Experimental files and their input/code hashes are saved under `jets/`,
 with a result SHA-256 stamp, apart from the normal blind Doppler prediction and validation/export paths.
+
+## 8. Source screening (`classify`)
+
+`classify` screens each broadband candidate from `jets/events.json` (created on first use if missing). The audio
+is re-read in 0.1 s frames (2048-point Hann FFT) and summed into third-octave bands from 63 Hz to 4 kHz. The
+100-2000 Hz power sum gives a level track; a 98th-percentile peak-to-median ratio of the 60-1000 Hz spectrum
+gives a per-frame tonality. Features per candidate:
+
+- `peak_excess_db`: 3 s-smoothed level at the peak above the recording's 10th percentile.
+- `rise_s`, `fall_s`, `pass_s`: time from the peak until the level is `min(10, max(3, 0.7 x excess))` dB lower.
+- `burst_db`: standard deviation of the 0.5 s-smoothed minus the 8 s-smoothed level inside that span. Separate
+  vehicles, gear changes and bumps raise it; a distant aircraft (whose level changes with range) keeps it low.
+- `hf_minus_lf_db`: mean excess over the quiet level in the 1-2 kHz bands minus that in the 100-400 Hz bands,
+  within 5 s of the peak. Air absorption removes high frequencies over kilometres (ISO 9613-1: a few dB/km at
+  1 kHz, under 1 dB/km at 125 Hz), so a jet at cruise height is strongly low-passed.
+- `tonal_excess_db`: median tonality in the span minus the recording median (engine and propeller tones).
+- The best overlapping tonal Doppler event labelled `aircraft` by `detect` (number of harmonic tracks, duration,
+  straight-line fit) and a fitted one-pass envelope (`tau_before_s`, `tau_after_s`, `fit_rms_db`), reported but
+  not used by the rule.
+
+Each test maps a feature linearly between two limits onto 0..1, and a class score is the geometric mean of its tests:
+
+| class | tests (0 at the first limit, 1 at the second) |
+|---|---|
+| jet | `burst_db` 3.0 to 2.2; `tonal_excess_db` 1.0 to 0.3; `hf_minus_lf_db` -5 to -10; `pass_s` 20 to 40; `peak_excess_db` 6 to 10 |
+| prop | harmonic tracks 10 to 20; Doppler event duration 45 to 90 s; `tonal_excess_db` 0.5 to 1.5; `burst_db` 4.0 to 3.0 |
+
+`handling` takes precedence when `burst_db` >= 4.5 together with at least 8 impact frames (section 7) or a fall
+under 1.5 s. Otherwise a score of at least 0.5 assigns jet (or prop); everything else is `not_aircraft`, with the
+failed tests as reasons. A speed or distance gate on the tonal fit is deliberately absent: an overhead light
+aircraft (35 m/s, 350 m) and a heavy road vehicle (30 m/s, 220 m) had nearly identical fits and even the same
+harmonic spacing, while the duration and completeness of the harmonic series separated them.
+
+The limits come from one owner-verified recording, so the evaluation is small: 15/15 labelled sounds agree on
+that recording (resubstitution, not a test), and on a second recording with unverified labels 5/7 agree (both
+probable jets missed). `--classified` on `match` selects the tonal events linked to `prop` sounds; on `jets` it
+selects the `jet` sounds. The screening file stores the start time and candidate bounds; a changed detection
+requires running `classify` again.
+
