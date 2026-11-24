@@ -370,7 +370,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {**job, 'case_id': cid}
 
 
-_ALLOWED = {'name', 'audio_start_utc', 'search_center', 'search_radius_km', 'aircraft_radius_km', 'ground_temp_c',
+_ALLOWED = {'name', 'audio_start_utc', 'audio_end_utc', 'search_center', 'search_radius_km', 'aircraft_radius_km', 'ground_temp_c',
             'delay_prior_s', 'mic_height_agl_m', 'terrain', 'ground_elevation_m', 'geoid_undulation_m', 'adsb_source',
             'match'}
 

@@ -401,6 +401,85 @@ def test_score_grid_evaluates_each_time_once_without_changing_costs(tmp_path, mo
     lags = np.r_[np.arange(-7.0, 15.1, 1.0), 2.5]
     want = _score_grid_per_offset(events, env, tracks, observers, c, lags, ALPHA, shift_s)
     monkeypatch.setattr(jets, 'LEVEL_CHUNK', 3 * len(lags) * 60)     # several cell chunks
-    got, per, assoc = jets.score_grid(events, env, tracks, enu, observers, c, lags, ALPHA, shift_s=shift_s)
+    got = jets.score_grid(events, env, tracks, enu, observers, c, lags, ALPHA, shift_s=shift_s)
     assert np.allclose(got, want, atol=1e-6, rtol=0)
     assert shift_s or (want < 0.1).any()                              # the true-time comparison fits somewhere
+
+
+def test_clock_hypotheses_add_a_later_clock_from_each_sound_on():
+    events = [{'id': 'J01', 't_start': 500}, {'id': 'J02', 't_start': 100}]   # J02 is heard first
+    lags = np.arange(-2.0, 3.0)
+    union, idx, desc = jets.clock_hypotheses(events, lags)
+    assert (union[idx] == lags[:, None]).all() and all(d[1] == 0 and d[2] is None for d in desc)
+    union, idx, desc = jets.clock_hypotheses(events, lags, gap_s=30.4)
+    assert {d[1] for d in desc} == {0, 22, 24, 26, 28, 30}            # whole steps down to the gap minus 8 s
+    assert len(desc) == len(idx) == len(lags) * (1 + 2 * 5)
+    for (x, g, first), row in zip(desc, union[idx]):
+        assert row == pytest.approx([x - g * (first is not None), x - g * (first == 'J02')])
+
+
+def _brute_assignment(C, w):
+    """Smallest weighted total over every one-to-one choice of a flight (or none) per sound."""
+    import itertools
+    K, A = C.shape
+    best = np.inf
+    for choice in itertools.product(range(-1, A), repeat=K):
+        used = [a for a in choice if a >= 0]
+        if len(used) == len(set(used)):
+            best = min(best, sum(wk * (min(C[k, a], 1) if a >= 0 else 1) for k, (a, wk) in enumerate(zip(choice, w))))
+    return best
+
+
+def test_assign_clocks_is_the_optimal_one_to_one_assignment_per_hypothesis():
+    rng = np.random.default_rng(3)
+    costs = rng.uniform(0, 1.3, (3, 4, 5, 2)).astype(np.float32)   # 3 sounds and 2 flights: many clashes
+    idx = rng.integers(0, 5, (7, 3))
+    for weights in (np.ones(3), np.array([1, 0, 2])):
+        per, assoc = jets._assign_clocks(costs, idx, weights)
+        active = weights > 0
+        for m in range(4):
+            for h, row in enumerate(idx):
+                C = costs[np.arange(3), m, row]
+                a = assoc[active, m, h]
+                assert len(set(a[a >= 0])) == (a >= 0).sum()                 # one sound per flight
+                got = [C[k, assoc[k, m, h]] if assoc[k, m, h] >= 0 else 1 for k in range(3)]
+                assert per[:, m, h] == pytest.approx(got)
+                assert weights @ per[:, m, h] == pytest.approx(_brute_assignment(C[active], weights[active]))
+
+
+def test_sounds_after_a_recording_gap_are_matched_with_the_later_clock(tmp_path):
+    import datetime as dt
+    c = make_case(tmp_path, seconds=1300)
+    enu = geo.ENU(*c.center)
+    observer = np.array([2500, -2500, 2])
+    delta, gap, pause = 4.0, 40.0, 400.0     # the recorder lost 40 s of wall-clock time at 400 s of audio
+    t = np.arange(.5, 1300)
+    y = np.zeros(len(t))
+    tracks, events = [], []
+    cs = physics.path_sound_speed(15, 2, 9000)
+    for k, (cpa, vel) in enumerate([(170, [230, 0, 0]), (590, [0, 230, 0]), (1050, [180, 150, 0])]):
+        late = gap * (cpa > pause)              # wall clock = recording clock + the gap, after the pause
+        origin, velocity = np.array([0, 0, 9000]), np.array(vel)
+        tracks.append(flight(enu, c.t0 + cpa + late, origin, velocity, f'abc12{k}'))
+        sel = abs(t - cpa) < 190
+        y[sel] = level(independent_range(c.t0 + t[sel] + late - delta, c.t0 + cpa + late, origin, velocity,
+                                         observer, cs))
+        events.append({'id': f'J{k + 1:02d}', 't_start': cpa - 90, 't_end': cpa + 100, 'flags': []})
+    adsb.save_tracks(tracks, c.tracks_path)
+    env = {'t_s': t.tolist(), 'activity_db': y.tolist()}
+    kw = dict(step_m=2500, timing_slack_s=0, log=lambda *a: None)
+    r0, _ = jets.match(c, env, events, **kw)
+    assert r0['clock_gap'] is None
+    end = dt.datetime.fromtimestamp(c.t0 + 1300 + gap + 4, dt.timezone.utc)     # 4 s of file finalisation
+    c = case.update(c, {'audio_end_utc': end.isoformat().replace('+00:00', 'Z')})
+    assert c.clock_gap_s == pytest.approx(gap + 4)
+    r, g = jets.match(c, env, events, **kw)
+    assert r['best_score'] > r0['best_score'] and r['n_supported'] == 3
+    assert r['clock_gap'] == {'measured_s': pytest.approx(gap + 4), 'fitted_s': pytest.approx(gap, abs=2),
+                              'first_sound_after': 'J02'}
+    assert abs(r['clock_offset_s'] - delta) <= 1.5
+    shifts = [a['timing_shift_s'] for a in r['assignments']]
+    assert shifts[0] == r['clock_offset_s'] and shifts[1] == shifts[2] == pytest.approx(delta - gap, abs=2.5)
+    true_cell = np.flatnonzero((g['E_m'] == observer[0]) & (g['N_m'] == observer[1]))[0]
+    assert g['near_best'][true_cell]
+    assert any('recording is 44 s shorter' in f for f in r['flags'])

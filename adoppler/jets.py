@@ -28,6 +28,8 @@ LAG_STEP_S = 1.0                 # spacing of the shared clock offsets that are 
 MIN_ALTITUDE_M = 4000            # candidate jets: median MSL altitude while within reach of the search area
 SPEED_MPS = (140, 340)           # and median horizontal speed over that same part of the track
 LEVEL_CHUNK = 1e6                # cells x clock offsets x samples evaluated at once (memory bound)
+GAP_FINALISE_S = 8.0             # audio_end_utc may trail the last sample by this much (file finalisation)
+GAP_STEP_S = 2.0                 # spacing of the recording-gap sizes that are searched
 LIMITATIONS = [
     'Experimental envelope matching, not validated on real high-altitude jets.',
     'Impact screening is a relative heuristic; listening labels are human impressions, not verified identities.',
@@ -330,34 +332,79 @@ def _assign(costs, weights=None):
     costs: event x position x aircraft. Return per-event costs and associations.
     Repeating a bootstrap unit changes its weight, not its number of assignments.
     """
-    K, M, A = costs.shape
-    weights = np.ones(K) if weights is None else np.asarray(weights, float)
-    if A == 0:
-        return np.ones((K, M)), np.full((K, M), -1, int)
-    arg = np.argmin(costs, axis=2)
-    low = np.take_along_axis(costs, arg[..., None], axis=2)[..., 0].astype(float)
-    per, assoc = np.where(low < 1, low, 1.0), np.where(low < 1, arg, -1)
-    # Each sound's own best flight is optimal unless two counted sounds want the same one.
-    active = np.flatnonzero(weights > 0)
-    clash = np.zeros(M, bool)
-    for i, a in enumerate(active):
-        for b in active[i + 1:]:
-            clash |= (assoc[a] == assoc[b]) & (assoc[a] >= 0)
-    n = len(active)
-    for m in np.flatnonzero(clash):
-        C = np.concatenate([costs[active, m], np.ones((n, n))], axis=1)
-        rows, cols = linear_sum_assignment(C * weights[active, None])
-        for r, a in zip(rows, cols):
-            k = active[r]
-            per[k, m], assoc[k, m] = (C[r, a], a) if a < A and C[r, a] < 1 else (1.0, -1)
-    return per, assoc
+    per, assoc = _assign_clocks(costs[:, :, None, :], np.zeros((1, len(costs)), int), weights)
+    return per[:, :, 0], assoc[:, :, 0]
 
 
 def _assign_lags(costs, weights=None):
     """Assignments for every (cell, shared clock offset); costs are sound x cell x offset x flight."""
     K, M, L, A = costs.shape
-    per, assoc = _assign(costs.reshape(K, M * L, A), weights)
-    return per.reshape(K, M, L), assoc.reshape(K, M, L)
+    return _assign_clocks(costs, np.repeat(np.arange(L)[:, None], K, axis=1), weights)
+
+
+def _best_flights(costs):
+    """Each sound's own best flight and its cost per cell and offset (sound x cell x offset)."""
+    arg = np.argmin(costs, axis=3)
+    return arg, np.take_along_axis(costs, arg[..., None], axis=3)[..., 0].astype(float)
+
+
+def _assign_clocks(costs, idx, weights=None, best=None):
+    """_assign for every (cell, clock hypothesis), without gathering the costs per hypothesis.
+
+    costs: sound x cell x offset x flight; hypothesis h reads sound k at offset idx[h, k]. best: the result of
+    _best_flights(costs), reused across bootstrap calls. Returns per-sound costs and flights (sound x cell x h).
+    """
+    K, M, L, A = costs.shape
+    H = len(idx)
+    weights = np.ones(K) if weights is None else np.asarray(weights, float)
+    if A == 0:
+        return np.ones((K, M, H)), np.full((K, M, H), -1, int)
+    arg, low = _best_flights(costs) if best is None else best
+    ix = np.broadcast_to(np.asarray(idx).T[:, None, :], (K, M, H))
+    arg, low = np.take_along_axis(arg, ix, axis=2), np.take_along_axis(low, ix, axis=2)
+    per, assoc = np.where(low < 1, low, 1.0), np.where(low < 1, arg, -1)
+    # Each sound's own best flight is optimal unless two counted sounds want the same one.
+    active = np.flatnonzero(weights > 0)
+    clash = np.zeros((M, H), bool)
+    for i, a in enumerate(active):
+        for b in active[i + 1:]:
+            clash |= (assoc[a] == assoc[b]) & (assoc[a] >= 0)
+    n = len(active)
+    for m, h in zip(*np.nonzero(clash)):
+        C = np.concatenate([costs[active, m, idx[h, active]], np.ones((n, n))], axis=1)
+        rows, cols = linear_sum_assignment(C * weights[active, None])
+        for r, a in zip(rows, cols):
+            k = active[r]
+            per[k, m, h], assoc[k, m, h] = (C[r, a], a) if a < A and C[r, a] < 1 else (1.0, -1)
+    return per, assoc
+
+
+def clock_hypotheses(events, lags, gap_s=0.0):
+    """Clock offsets to search for each sound.
+
+    Without a recording gap every sound shares one offset. With one (a pause or dropout: audio_end_utc is
+    later than the start plus the audio duration), sounds from an unknown one on arrive later by the gap:
+    their offset is the shared offset minus the gap. The measured gap includes up to GAP_FINALISE_S of file
+    finalisation, so smaller gaps are tried too (whole clock steps, so the offsets after the gap stay on the
+    same grid). Returns the union of offsets, an index table (hypothesis x sound) into it, and per hypothesis
+    (offset before the gap, gap, first sound after it or None).
+    """
+    lags = np.asarray(lags, float)
+    K = len(events)
+    rows, desc = [np.repeat(lags[:, None], K, axis=1)], [(float(x), 0.0, None) for x in lags]
+    if gap_s and gap_s > 0:
+        order = np.argsort([e['t_start'] for e in events], kind='stable')
+        gaps = np.arange(gap_s, max(gap_s - GAP_FINALISE_S, LAG_STEP_S) - 1e-9, -GAP_STEP_S)
+        gaps = np.unique(np.maximum(np.round(gaps / LAG_STEP_S), 1) * LAG_STEP_S)[::-1]
+        for j in range(K):
+            after = np.zeros(K, bool)
+            after[order[j:]] = True
+            for g in gaps:
+                rows.append(lags[:, None] - g * after)
+                desc += [(float(x), float(g), events[order[j]]['id']) for x in lags]
+    table = np.round(np.concatenate(rows), 6)
+    union, inv = np.unique(table, return_inverse=True)
+    return union, inv.reshape(table.shape), desc
 
 
 def _best_offsets(per, weights=None):
@@ -370,7 +417,7 @@ def _best_offsets(per, weights=None):
 def score_grid(events, env, tracks, enu, observers, case, lags, alpha=0.0, shift_s=0, log=None):
     """Compare entire padded event windows to each candidate at every shared clock offset.
 
-    Returns costs (sound x cell x offset x flight) and the one-to-one assignment per cell and offset.
+    Returns costs (sound x cell x offset x flight); _assign_clocks turns them into one-to-one assignments.
     Every null uses the same candidates and selection procedure. Only the sound
     times move, wrapped as whole windows so no discontinuity is spliced into one.
     """
@@ -420,8 +467,7 @@ def score_grid(events, env, tracks, enu, observers, case, lags, alpha=0.0, shift
                 costs[k, start:stop, :, ai] = np.where(near, cc, 1)
         if log:
             log(f"  {event['id']}: compared {compared} of {A} high/fast flight tracks")
-    per, assoc = _assign_lags(costs)
-    return costs, per, assoc
+    return costs
 
 
 def _region(E, N, selected, enu, step):
@@ -479,31 +525,38 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
         return {'status': 'no_candidate_tracks', 'summary': 'No high-altitude, fast flight tracks in the supplied data.', 'location_estimate': None}, None
     lo, hi = case.delay_prior
     lags = np.arange(lo - timing_slack_s, hi + timing_slack_s + LAG_STEP_S / 2, LAG_STEP_S)
+    gap = case.clock_gap_s or 0.0
+    union, idx, clock = clock_hypotheses(events, lags, gap)
     alpha = float(physics.absorption_db_per_m(ABSORPTION_HZ, case.ground_temp_c))
     log(f'experimental jet matching: {len(events)} sounds, {len(tracks)} tracks, {len(E)} cells, '
-        f'{len(lags)} shared clock offsets, absorption {alpha * 1000:.2f} dB/km')
-    costs, per_l, assoc_l = score_grid(events, env, tracks, enu, observers, case, lags, alpha, log=log)
+        f'{len(lags)} shared clock offsets' + (f' x {len(idx) // len(lags) - 1} recording-gap hypotheses '
+                                               f'(gap {gap:.0f} s)' if gap else '') +
+        f', absorption {alpha * 1000:.2f} dB/km')
+    costs = score_grid(events, env, tracks, enu, observers, case, union, alpha, log=log)
+    pre = _best_flights(costs)
+    per_l, assoc_l = _assign_clocks(costs, idx, best=pre)
     scores, lag_i = _best_offsets(per_l)
     cells = np.arange(len(E))
     per, assoc = per_l[:, cells, lag_i], assoc_l[:, cells, lag_i]
     best = int(np.argmax(scores))
-    best_lag = float(lags[lag_i[best]])
+    best_lag, best_gap, first_after = clock[lag_i[best]]
+    sound_lag = union[idx[lag_i[best]]]
     accepted = per[:, best] <= 0.5
     supported = int(accepted.sum())
     near = scores >= scores[best] - 0.05
     nulls = []
     for fraction in (0.25, 0.5, 0.75):
         log(f'  time-shift null {fraction:.0%}')
-        _, np_, _ = score_grid(events, env, tracks, enu, observers, case, lags, alpha,
-                               shift_s=fraction * (env['t_s'][-1] - env['t_s'][0]))
-        ns, _ = _best_offsets(np_)
+        cn = score_grid(events, env, tracks, enu, observers, case, union, alpha,
+                        shift_s=fraction * (env['t_s'][-1] - env['t_s'][0]))
+        ns, _ = _best_offsets(_assign_clocks(cn, idx)[0])
         nulls.append({'shift_s': fraction * (env['t_s'][-1] - env['t_s'][0]), 'best_score': float(ns.max())})
     # Reassign on each leave-one-out/whole-event bootstrap, retaining one-to-one associations.
     loo = []
     if len(events) >= 2:
         for k, e in enumerate(events):
             weights = np.ones(len(events)); weights[k] = 0
-            pp, _ = _assign_lags(costs, weights)
+            pp, _ = _assign_clocks(costs, idx, weights, best=pre)
             ss, _ = _best_offsets(pp, weights)
             i = int(np.argmax(ss))
             loo.append({'left_out': e['id'], 'movement_m': float(np.hypot(E[i] - E[best], N[i] - N[best]))})
@@ -513,7 +566,7 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
         rng = np.random.default_rng(0)
         for _ in range(100):
             weights = np.bincount(rng.choice(active, size=len(active)), minlength=len(events))
-            pp, _ = _assign_lags(costs, weights)
+            pp, _ = _assign_clocks(costs, idx, weights, best=pre)
             ss, _ = _best_offsets(pp, weights)
             i = int(np.argmax(ss))
             boot.append(float(np.hypot(E[i] - E[best], N[i] - N[best])))
@@ -532,6 +585,9 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
         flags.append('Leaving out one sound moves the top grid cell by more than 5 km.')
     if supported and len(lags) > 1 and min(abs(best_lag - lags[0]), abs(best_lag - lags[-1])) < LAG_STEP_S / 2:
         flags.append('The fitted clock offset reaches its allowed limit; the chosen slack may truncate alternatives.')
+    if gap:
+        flags.append(f'The recording is {gap:.0f} s shorter than its wall-clock span (audio_end_utc): sounds after an '
+                     'unknown point are tried with a later clock, which adds timing freedom.')
     verdict = 'failed' if not supported else ('ambiguous' if flags else 'exploratory')
     assignments = []
     for k, e in enumerate(events):
@@ -539,13 +595,13 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
         assignment = {'event': e['id'], 'icao24': tracks[ai][0].icao24 if ai >= 0 else None,
                             'aircraft': tracks[ai][0].label if ai >= 0 else None,
                             'shape_score': float(1 - per[k, best]), 'passes_shape_screen': bool(accepted[k]),
-                            'timing_shift_s': best_lag if ai >= 0 else None}
+                            'timing_shift_s': float(sound_lag[k]) if ai >= 0 else None}
         if ai >= 0:
             rel, observed = _observations(env, e)
             traj = tracks[ai][1]
             c = physics.path_sound_speed(case.ground_temp_c, float(np.nanmedian(observers[:, 2])),
                                          float(np.nanmedian(traj.P[:, 2])))
-            x, u, _ = level_terms(traj, observers[best:best + 1], case.t0 + rel - best_lag, c, alpha)
+            x, u, _ = level_terms(traj, observers[best:best + 1], case.t0 + rel - sound_lag[k], c, alpha)
             x, u = above_floor(x, u, observed.max())
             _, gain, b = fit_level(x[0], observed, u[0])
             x, u = x[0] - x[0].mean(), u[0] - u[0].mean()
@@ -556,6 +612,8 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
     result = {'status': verdict, 'summary': f'{supported}/{len(events)} broadband events pass the experimental shape screen.',
               'location_estimate': None, 'best_score': float(scores[best]), 'n_supported': supported,
               'clock_offset_s': best_lag if supported else None,
+              'clock_gap': ({'measured_s': gap, 'fitted_s': best_gap, 'first_sound_after': first_after}
+                            if gap and supported else None),
               'best_grid_hypothesis': {'lat': float(lat[best]), 'lon': float(lon[best])} if supported else None,
               'compatible_region': _region(E, N, near, enu, step_m) if supported else None,
               'flags': flags, 'assignments': assignments, 'null_tests': nulls,
@@ -564,7 +622,10 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
                             'bootstrap_grid_90_m': float(np.percentile(boot, 90)) if boot else None,
                             'note': 'Uncalibrated grid stability only, conditional on the event/model assumptions.'},
               'settings': {'step_m': step_m, 'timing_slack_s': timing_slack_s, 'lag_range_s': [float(lags.min()), float(lags.max())],
-                           'lag_step_s': LAG_STEP_S, 'clock_offset': 'one offset shared by all sounds',
+                           'lag_step_s': LAG_STEP_S,
+                           'clock_offset': 'one offset shared by all sounds' + (
+                               f'; later by a {max(gap - GAP_FINALISE_S, LAG_STEP_S):.0f}-{gap:.0f} s recording gap '
+                               'from an unknown sound on' if gap else ''),
                            'absorption_db_per_km': round(alpha * 1000, 3), 'absorption_frequency_hz': ABSORPTION_HZ,
                            'gain_limits': list(GAIN_LIMITS), 'directivity_db_limits': list(DIRECTIVITY_DB),
                            'min_altitude_m': MIN_ALTITUDE_M, 'ground_speed_mps': list(SPEED_MPS),
@@ -572,7 +633,7 @@ def match(case, env, events, step_m=2000, timing_slack_s=5, log=print):
                            'max_slant_range_m': MAX_RANGE_M,
                            'near_best_score_tolerance': 0.05, 'bootstrap_resamples': len(boot)}}
     grid = {'E_m': E, 'N_m': N, 'lat': lat, 'lon': lon, 'score': scores,
-            'near_best': near, 'per_event_cost': per, 'flight_index': assoc, 'clock_offset_s': lags[lag_i]}
+            'near_best': near, 'per_event_cost': per, 'flight_index': assoc, 'clock_offset_s': np.array([clock[h][0] for h in lag_i])}
     return result, grid
 
 

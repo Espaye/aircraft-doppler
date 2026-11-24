@@ -50,7 +50,8 @@ The total is the sum over events. An event counts as *explained* when its mean c
 
 The search proceeds in four steps:
 
-1. A coarse grid over the search disc and over `δ` within `delay_prior_s`.
+1. A coarse grid over the search disc and over `δ` within `delay_prior_s` (its lower end moved down by the
+   recording gap when `audio_end_utc` shows one; see section 7).
 2. Local grids around the best few separated modes.
 3. A least-squares refinement of position, `δ` and ground temperature (±5 °C), using the explained events.
 4. A fine grid around the result, which is turned into a pseudo-posterior. Residuals within one event are
@@ -154,7 +155,13 @@ margin. A coarse search covers the prior disc (2 km default spacing). All sounds
 because one phone clock records them all: it is searched in 1 s steps over the case clock prior plus 5 s either
 side (`--timing-slack`), and every cell takes its best offset. Fitting a separate shift per sound would let each
 sound slide its envelope to a wrong flight. The fitted offset is a nuisance parameter, not a calibrated clock
-correction. Full padded event support must be covered by the track; partial data cannot win
+correction. When `audio_end_utc` shows that the audio is shorter than its wall-clock span by a gap `G` (a pause
+or dropout), one extra free parameter is allowed: sounds from an unknown one on (in time order) use the offset
+`δ - g`, for `g` in whole seconds from `G - 8 s` to `G` in 2 s steps (the end time includes a few seconds of
+file finalisation). Each cell takes its best of these hypotheses, and the time-shift nulls, leave-one-out and
+bootstrap search the same set, so the extra freedom is also given to the wrong-time controls. The result
+reports `clock_gap` (`measured_s`, `fitted_s`, `first_sound_after`) and a flag. The level model is evaluated
+once per distinct sample time across all offsets, so a wider clock search costs little more than a narrow one. Full padded event support must be covered by the track; partial data cannot win
 by fitting only the peak. Cost is residual energy divided by observed variation after the shape fit. A residual
 fraction <=0.5 passes an exploratory shape screen; that threshold is not a calibrated probability.
 

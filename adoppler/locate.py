@@ -134,7 +134,7 @@ def run(case, ids=None, min_score=None, step=None, force=False, workers=None, n_
 
     def problem(evs, t_ground_c):
         return match.Problem(evs, tracks, t_ground_c, terrain, lat0, lon0, case.radius_m, case.mic_height, geoid_n,
-                             delta_range=case.delay_prior)
+                             delta_range=case.delay_range)
     pb = problem(events, case.ground_temp_c)
     if not any(pb.cands):
         raise MatchError('no ADS-B aircraft was near the search area while any event was heard; check '
@@ -240,7 +240,7 @@ def run(case, ids=None, min_score=None, step=None, force=False, workers=None, n_
         if arg[k] >= 0:
             d.update(_simulate(pb, k, int(arg[k]), obs, dl, tc))
         if not d['explained']:
-            gaps = match.coverage_gaps(tracks, ev, pb.enu, case.radius_m + 15000, geoid_n, case.delay_prior)
+            gaps = match.coverage_gaps(tracks, ev, pb.enu, case.radius_m + 15000, geoid_n, case.delay_range)
             if gaps:
                 d['coverage_gap_candidates'] = gaps
                 for g_ in gaps[:3]:
@@ -285,7 +285,8 @@ def run(case, ids=None, min_score=None, step=None, force=False, workers=None, n_
         'settings': {'coarse_step_m': step, 'local_step_m': float(L['step']), 'fine_step_m': FINE_STEP, 'delta_range_s': list(pb.delta_range),
                      'sigma_log': pb.sigma, 'cap': pb.cap, 'explained_below': EXPLAINED, 'min_score': min_score,
                      'mic_height_agl_m': case.mic_height, 'search_radius_m': case.radius_m,
-                     'ground_temp_prior_c': case.ground_temp_c, 'null_tests': n_null, 'modes': n_modes},
+                     'ground_temp_prior_c': case.ground_temp_c, 'null_tests': n_null, 'modes': n_modes,
+                     'clock_gap_s': case.clock_gap_s},
         'enu_origin': [pb.enu.lat0, pb.enu.lon0, pb.enu.h0],
     }
     result['assessment'] = assess(result)
@@ -339,6 +340,7 @@ def validate(case, lat, lon, ref_source):
 NULL_MARGIN = 3.0      # null tests within this of the real coarse total: the match may be chance
 ALT_MARGIN = 2.0       # a distinct alternative within this of the best local total: ambiguous
 MODE_STABILITY = 0.8   # coarse mode kept in fewer bootstrap resamples than this: ambiguous
+TEMP_SHIFT_C = 10.0    # refined temperature this far from the prior (or at its bound): the speeds disagree
 
 
 def assess(r):
@@ -377,6 +379,16 @@ def assess(r):
             flag('ambiguous', f"a distinct solution {d / 1000:.1f} km away fits almost as well "
                               f"({a['n_explained']} events explained)")
             break
+    aircraft = {e.get('icao24') for e in r.get('events', []) if e.get('explained') and e.get('icao24')}
+    if b['n_explained'] >= 2 and len(aircraft) == 1:
+        flag('weak', 'all explained events come from one aircraft, so they share its track errors and the bootstrap '
+                     'cannot resample them independently: the quoted spread is not an uncertainty')
+    tc, t0 = b.get('ground_temp_c'), r['settings'].get('ground_temp_prior_c')
+    if tc is not None and t0 is not None and (abs(tc - t0) > TEMP_SHIFT_C or not
+                                              match.TEMP_BOUNDS_C[0] + 0.5 < tc < match.TEMP_BOUNDS_C[1] - 0.5):
+        flag('weak', f'the fit needs a sound speed for {tc:.0f} C instead of the {t0:.0f} C given: the Doppler curves '
+                     'and the ADS-B speeds disagree (wind along the track or an ADS-B speed error), which can '
+                     'bias the position; check ground_temp_c')
     if u['bootstrap_edge_fraction'] > 0.1 or u['posterior_95_touches_edge']:
         flag('weak', 'the uncertainty reaches the edge of the fine grid, so the quoted spread is a lower bound')
     if np.hypot(b['E_m'], b['N_m']) > 0.9 * r['settings']['search_radius_m']:
