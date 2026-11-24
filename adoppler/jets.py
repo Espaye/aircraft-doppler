@@ -27,6 +27,7 @@ MAX_RANGE_M = 25000              # audibility cutoff: about 40 dB of 354 Hz abso
 LAG_STEP_S = 1.0                 # spacing of the shared clock offsets that are searched
 MIN_ALTITUDE_M = 4000            # candidate jets: median MSL altitude while within reach of the search area
 SPEED_MPS = (140, 340)           # and median horizontal speed over that same part of the track
+LEVEL_CHUNK = 1e6                # cells x clock offsets x samples evaluated at once (memory bound)
 LIMITATIONS = [
     'Experimental envelope matching, not validated on real high-altitude jets.',
     'Impact screening is a relative heuristic; listening labels are human impressions, not verified identities.',
@@ -389,6 +390,12 @@ def score_grid(events, env, tracks, enu, observers, case, lags, alpha=0.0, shift
             a_new = et[0] + (a - et[0] + shift_s) % duration
             rel = rel + a_new - a
         rx = case.t0 + rel
+        # The level terms of one cell at one reception time do not depend on the clock offset, and the
+        # lagged times overlap heavily (4 s samples, 1-2 s offsets): evaluate each distinct time once and
+        # gather it per offset. Exact: every element sees the same arithmetic as a per-offset evaluation.
+        times, inv = np.unique(rx[None, :] - np.asarray(lags, float)[:, None], return_inverse=True)
+        inv = inv.reshape(L, len(rx))
+        chunk = max(1, int(LEVEL_CHUNK // (L * len(rx))))
         compared = 0
         for ai, (track, traj) in enumerate(tracks):
             # Emission precedes reception; reject no-support hypotheses without extrapolation.
@@ -403,15 +410,14 @@ def score_grid(events, env, tracks, enu, observers, case, lags, alpha=0.0, shift
             compared += 1
             c = physics.path_sound_speed(case.ground_temp_c, float(np.nanmedian(observers[:, 2])),
                                          float(np.nanmedian(traj.P[:, 2])))
-            for start in range(0, M, 256):
-                stop = min(M, start + 256)
-                for li, lag in enumerate(lags):
-                    x, u, R = level_terms(traj, observers[start:stop], rx - lag, c, alpha)
-                    z, ue = above_floor(x, u, y.max())
-                    cc = shape_cost(z, y, ue)
-                    # This is an audibility search cutoff, not a measured sound range.
-                    near = np.min(np.where(np.isfinite(R), R, np.inf), axis=-1) <= MAX_RANGE_M
-                    costs[k, start:stop, li, ai] = np.where(near, cc, 1)
+            for start in range(0, M, chunk):
+                stop = min(M, start + chunk)
+                x, u, R = (a[:, inv] for a in level_terms(traj, observers[start:stop], times, c, alpha))
+                z, ue = above_floor(x, u, y.max())          # cell x offset x sample
+                cc = shape_cost(z, y, ue)
+                # This is an audibility search cutoff, not a measured sound range.
+                near = np.min(np.where(np.isfinite(R), R, np.inf), axis=-1) <= MAX_RANGE_M
+                costs[k, start:stop, :, ai] = np.where(near, cc, 1)
         if log:
             log(f"  {event['id']}: compared {compared} of {A} high/fast flight tracks")
     per, assoc = _assign_lags(costs)

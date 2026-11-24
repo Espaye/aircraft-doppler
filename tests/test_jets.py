@@ -354,3 +354,53 @@ def test_cli_review_selection_persists_with_hash_and_escaped_notes(tmp_path):
     assert json.loads((out / 'result.json').read_text())['status'] == 'no_events'
     with pytest.raises(jets.JetError):
         jets.run(c, review_labels=path, windows=[(30, 90)], log=lambda *a: None)
+
+
+def _score_grid_per_offset(events, env, tracks, observers, case, lags, alpha, shift_s=0):
+    """The original evaluation: level terms recomputed for every clock offset (reference for the speed-up)."""
+    et = np.array(env['t_s'])
+    costs = np.ones((len(events), len(observers), len(lags), len(tracks)), np.float32)
+    for k, event in enumerate(events):
+        a = max(et[0], event['t_start'] - 25)
+        rel, y = jets._observations(env, event)
+        if shift_s:
+            rel = rel + et[0] + (a - et[0] + shift_s) % (et[-1] - et[0]) - a
+        rx = case.t0 + rel
+        for ai, (track, traj) in enumerate(tracks):
+            c = physics.path_sound_speed(case.ground_temp_c, float(np.nanmedian(observers[:, 2])),
+                                         float(np.nanmedian(traj.P[:, 2])))
+            for li, lag in enumerate(lags):
+                x, u, R = jets.level_terms(traj, observers, rx - lag, c, alpha)
+                z, ue = jets.above_floor(x, u, y.max())
+                near = np.min(np.where(np.isfinite(R), R, np.inf), axis=-1) <= jets.MAX_RANGE_M
+                costs[k, :, li, ai] = np.where(near, jets.shape_cost(z, y, ue), 1)
+    return costs
+
+
+@pytest.mark.parametrize('shift_s', [0, 337.0])
+def test_score_grid_evaluates_each_time_once_without_changing_costs(tmp_path, monkeypatch, shift_s):
+    c = make_case(tmp_path, seconds=900)
+    enu = geo.ENU(*c.center)
+    t = np.arange(.5, 900)
+    obs_true = np.array([2500, -2500, 2])
+    cs = physics.path_sound_speed(15, 2, 9000)
+    y = np.zeros(len(t))
+    raw, events = [], []
+    for k, (cpa, vel) in enumerate([(200, [230, 0, 0]), (600, [0, 230, 0])]):
+        origin, velocity = np.array([0, 0, 9000]), np.array(vel)
+        raw.append(flight(enu, c.t0 + cpa, origin, velocity, f'abc12{k}'))
+        sel = abs(t - cpa) < 190
+        y[sel] = level(independent_range(c.t0 + t[sel] - 3, c.t0 + cpa, origin, velocity, obs_true, cs))
+        events.append({'id': f'J{k + 1:02d}', 't_start': cpa - 90, 't_end': cpa + 100, 'flags': []})
+    # a masked impact makes the samples irregular; offsets mix 1 s steps with a fractional one
+    env = {'t_s': t.tolist(), 'activity_db': y.tolist(), 'transient_intervals_s': [[230.0, 236.0]]}
+    tracks = [(tr, physics.Trajectory(tr, enu, c.t0 - 600, c.t0 + 1500, dt=2, geoid_n=0)) for tr in raw]
+    g = np.arange(-5000, 5001, 2500.0)
+    E, N = (a.ravel() for a in np.meshgrid(g, g))
+    observers = np.column_stack([E, N, np.full(len(E), 2.0)])
+    lags = np.r_[np.arange(-7.0, 15.1, 1.0), 2.5]
+    want = _score_grid_per_offset(events, env, tracks, observers, c, lags, ALPHA, shift_s)
+    monkeypatch.setattr(jets, 'LEVEL_CHUNK', 3 * len(lags) * 60)     # several cell chunks
+    got, per, assoc = jets.score_grid(events, env, tracks, enu, observers, c, lags, ALPHA, shift_s=shift_s)
+    assert np.allclose(got, want, atol=1e-6, rtol=0)
+    assert shift_s or (want < 0.1).any()                              # the true-time comparison fits somewhere
