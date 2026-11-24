@@ -13,6 +13,7 @@ DEFAULTS = {
     'aircraft_radius_km': 60.0,    # ADS-B traffic retrieved around search_center
     'ground_temp_c': 15.0,
     'delay_prior_s': [-2.0, 10.0],  # recording clock minus acoustic time (encoder/stream latency)
+    'audio_end_utc': None,         # wall-clock end of the recording, e.g. the MP4 creation_time (reveals gaps)
     'mic_height_agl_m': 2.0,
     'terrain': 'flat',             # 'flat' (ground_elevation_m) or 'usgs-3dep' (United States only)
     'ground_elevation_m': 0.0,

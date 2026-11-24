@@ -12,6 +12,10 @@ case.json keys (defaults in adoppler.config.DEFAULTS):
     name                 free text
     audio                audio file name inside the case directory (or an absolute path)
     audio_start_utc      ISO 8601 UTC time of the first audio sample, e.g. "2026-06-01T12:00:00Z"
+    audio_end_utc        optional wall-clock time the recording stopped (phone recorders write it as the
+                         MP4/M4A creation_time). If it is later than the start plus the audio duration, the
+                         recording has a gap (a pause or dropout) and sounds after it arrive late by up to that
+                         much; the matching then searches that later clock too
     search_center        [lat, lon]: prior centre of the microphone search (e.g. a town centre)
     search_radius_km     radius of the search disc around search_center
     aircraft_radius_km   radius for retrieving ADS-B traffic
@@ -24,12 +28,13 @@ case.json keys (defaults in adoppler.config.DEFAULTS):
     adsb_file            tracks file for adsb_source "file" (adoppler tracks JSON or CSV, see adsb.load_file)
     match                {coarse_step_m, min_score, workers, null_tests, modes, events}
 """
-import copy, datetime as dt, json, re
+import copy, datetime as dt, json, math, re
 from pathlib import Path
 
 from . import config
 
 CASE_FILE = 'case.json'
+GAP_TOLERANCE_S = 10.0     # audio_end_utc within this of start + duration: no gap (file finalisation, rounding)
 
 
 class CaseError(ValueError):
@@ -108,6 +113,9 @@ class Case:
         if s['adsb_source'] == 'file' and not s.get('adsb_file'):
             raise CaseError('adsb_source "file" needs adsb_file')
         self.t0 = _parse_utc(s['audio_start_utc'])
+        self.t_end = None if s.get('audio_end_utc') in (None, '') else _parse_utc(s['audio_end_utc'])
+        if self.t_end is not None and self.t_end <= self.t0:
+            raise CaseError('audio_end_utc must be later than audio_start_utc')
 
     @property
     def name(self):
@@ -134,8 +142,44 @@ class Case:
         return tuple(float(x) for x in self.s['delay_prior_s'])
 
     @property
+    def clock_gap_s(self):
+        """Wall-clock time missing from the audio (pause or dropout), from audio_end_utc.
+
+        None when audio_end_utc is not set, 0 when it agrees with the start plus the duration."""
+        if self.t_end is None:
+            return None
+        gap = self.t_end - self.t0 - self.audio_info()['duration_s']
+        if gap < -GAP_TOLERANCE_S:
+            raise CaseError(f'audio_end_utc is {-gap:.0f} s before audio_start_utc plus the audio duration; '
+                            'one of the two times is wrong')
+        return gap if gap > GAP_TOLERANCE_S else 0.0
+
+    @property
+    def delay_range(self):
+        """delay_prior_s, widened so that sounds after a recording gap can also be matched."""
+        lo, hi = self.delay_prior
+        return lo - (self.clock_gap_s or 0.0), hi
+
+    @property
     def ground_temp_c(self):
         return float(self.s['ground_temp_c'])
+
+    def warnings(self):
+        """Settings that are probably wrong or missing, in plain language."""
+        out = []
+        if 'ground_temp_c' not in self.raw:
+            out.append(f"ground_temp_c is not set, so {self.ground_temp_c:.0f} C is assumed; a 10 C error changes "
+                       f"the sound speed by about {100 * (1 - math.sqrt(1 - 10 / 288.15)):.1f} %. Set the measured "
+                       "temperature (for example from the nearest weather station).")
+        try:
+            gap = self.clock_gap_s
+        except CaseError as e:                  # also: audio missing or unreadable
+            return out + [str(e)]
+        if gap:
+            out.append(f'the recording is {gap:.0f} s shorter than the time between audio_start_utc and '
+                       'audio_end_utc: it probably has a pause or dropout, so sounds after it arrive later than '
+                       'the start time implies. The matching searches that later clock as well.')
+        return out
 
     @property
     def mic_height(self):
@@ -202,7 +246,8 @@ class Case:
         return st
 
     def summary(self):
-        return {'id': self.dir.name, 'name': self.name, 'settings': self.s, 'status': self.status()}
+        return {'id': self.dir.name, 'name': self.name, 'settings': self.s, 'status': self.status(),
+                'warnings': self.warnings()}
 
 
 def create(path, settings, overwrite=False):

@@ -78,3 +78,17 @@ def test_uploaded_flight_data_replaces_fetched_tracks(srv, tmp_path):
     (d / 'adsb').mkdir(); (d / 'adsb' / 'tracks.json').write_text('[]')
     assert req(srv, 'PUT', f'/api/cases/{d.name}/upload?kind=adsb&name=f.csv', b'icao24,time,lat,lon,alt_m\n', W)[0] == 200
     assert not (d / 'adsb' / 'tracks.json').exists()
+
+
+def test_recording_end_is_a_setting_and_warnings_are_reported(srv):
+    st, _, b = req(srv, 'POST', '/api/cases', {'name': 'Gap', 'audio': 'rec.wav', 'search_center': [52, 5],
+                                                'audio_start_utc': '2026-06-01T12:00:00Z',
+                                                'audio_end_utc': '2026-06-01T13:00:00Z'}, W)
+    assert st == 201
+    s = json.loads(b)
+    assert s['settings']['audio_end_utc'] == '2026-06-01T13:00:00Z'
+    assert any('ground_temp_c is not set' in w for w in s['warnings'])
+    assert any('not found' in w for w in s['warnings'])               # the gap needs the audio duration
+    st, _, b = req(srv, 'PUT', f"/api/cases/{s['id']}/settings", {'audio_end_utc': '2026-06-01T11:00:00Z'}, W)
+    assert st == 400 and b'later than audio_start_utc' in b
+    assert req(srv, 'PUT', f"/api/cases/{s['id']}/settings", {'audio_end_utc': None})[0] == 403   # header needed

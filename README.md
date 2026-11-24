@@ -128,12 +128,20 @@ never a location estimate, has not been validated on real recordings, and never 
 | `aircraft_radius_km` | 60 | radius for flight data; keep it at least `search_radius_km` + 40 for `jets` |
 | `ground_temp_c` | 15 | air temperature at the ground; refined within ±5 °C |
 | `delay_prior_s` | [−2, 10] | allowed recording-clock offset |
+| `audio_end_utc` | none | when the recording stopped; reveals a pause or dropout (see below) |
 | `terrain` | `flat` | `flat` uses `ground_elevation_m`; `usgs-3dep` downloads elevation (United States only) |
 | `geoid_undulation_m` | automatic | downloaded from PROJ; set it by hand when offline |
 | `adsb_source` | `auto` | `adsb.lol`, `adsb.aero`, or `file` with `adsb_file` |
 | `match.min_score` | 0.5 | detection quality an event needs to be used |
 
 The full list is in [adoppler/case.py](adoppler/case.py).
+
+**Pauses and dropouts.** A phone recorder that pauses, or drops audio, makes every later sound arrive later than
+the start time implies. Give the time the recording stopped (`--end`, or `audio_end_utc`); for M4A files from
+phone recorders this appears to be the container's creation time,
+`ffprobe -v error -show_entries format_tags=creation_time <file>`. If the audio is more than 10 s shorter
+than start to end, the case warns, `match` widens its clock range by the gap, and `jets` also tries the later
+clock from each sound on. `adoppler status` lists this and other warnings, such as a missing `ground_temp_c`.
 
 **Flight data.** The adsb.lol archive is the complete daily feed, published a few hours after midnight UTC
 (the day's 3 GB is streamed once and only nearby tracks are kept). Until it is out, adsb.aero gives simplified
@@ -148,7 +156,7 @@ The result gives a position, a 68% and 90% radius, and a **verdict**:
 | Verdict | Meaning |
 |---|---|
 | `ok` | at least three passes explained, a stable best area, and no comparable alternative |
-| `weak` | too few independent passes, or leaving one out moves the answer: treat it as a hint |
+| `weak` | too few independent passes, all from one aircraft, a fitted temperature far from `ground_temp_c`, or leaving one out moves the answer: treat it as a hint |
 | `ambiguous` | another area, or time-shifted flight data, fits about as well: no reliable location |
 | `failed` | fewer than two passes explained |
 
@@ -161,7 +169,8 @@ nothing explains is often a light aircraft outside ADS-B coverage; `match` lists
 
 - The matcher needs tonal sources: piston and turboprop aircraft at low altitude.
 - Aircraft without ADS-B, or outside receiver coverage, cannot be used.
-- Clock errors beyond `delay_prior_s`, strong wind, echoes from buildings or recording indoors can bias the result.
+- Clock errors beyond `delay_prior_s`, a pause in the recording without `audio_end_utc`, strong wind, echoes from
+  buildings or recording indoors can bias the result.
   The verdict catches some of this, not all.
 - The physics uses straight sound rays: no refraction by wind and no terrain shadowing.
 

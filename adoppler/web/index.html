@@ -36,6 +36,7 @@
       <div class="card" id="pipeline">
         <div class="card-head"><h2 id="case-title"></h2><button id="btn-settings" class="ghost small live-only">Settings</button></div>
         <p id="case-meta" class="muted"></p>
+        <p id="case-warnings" class="note hidden"></p>
         <ol class="stages">
           <li data-stage="analyse"><span class="dot"></span><div><b>1. Detect Doppler events</b><br><span class="muted">spectrogram, tonal lines, curve fits</span></div><button class="small live-only">Run</button></li>
           <li data-stage="adsb"><span class="dot"></span><div><b>2. Flight data</b><br><span class="muted">historical ADS-B for the window and area</span></div><button class="small live-only">Run</button></li>
@@ -88,6 +89,8 @@
       <label id="audio-field">Audio file <input name="audio_file" type="file" accept=".wav,.flac,.ogg,.mp3,.aif,.aiff"></label>
       <label>Recording start (UTC) <input name="audio_start_utc" placeholder="2026-06-01T12:00:00Z" required>
         <small>time of the first sample; the fit allows the clock to be off by delay_prior_s</small></label>
+      <label>Recording end (UTC, optional) <input name="audio_end_utc" placeholder="2026-06-01T13:00:05Z">
+        <small>phone recorders store it as the file's creation time; reveals pauses and dropouts</small></label>
       <label>Search centre (lat, lon) <input name="search_center" placeholder="52.08, 5.83" required>
         <small>a town or area you believe the microphone is near</small></label>
       <label>Search radius (km) <input name="search_radius_km" type="number" min="1" max="200" step="1"></label>

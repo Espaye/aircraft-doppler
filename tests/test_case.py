@@ -112,3 +112,45 @@ def test_null_test_close_to_real_is_ambiguous():
     r = _result(shifted_total=31.0)
     r['null_test']['shifted'][0]['n_explained'] = 5
     assert locate.assess(r)['verdict'] == 'ambiguous'
+
+
+def test_recording_gap_from_the_end_time(tmp_path):
+    wav(tmp_path / 'a.wav', seconds=100)
+    c = make(tmp_path)
+    assert c.clock_gap_s is None and c.delay_range == c.delay_prior
+    assert len(c.warnings()) == 1 and 'ground_temp_c is not set' in c.warnings()[0]
+    c = make(tmp_path, audio_end_utc='2026-06-01T12:01:45Z', ground_temp_c=8)     # 5 s of file finalisation
+    assert c.clock_gap_s == 0 and c.delay_range == c.delay_prior and c.warnings() == []
+    c = make(tmp_path, audio_end_utc='2026-06-01T12:02:40Z', ground_temp_c=8)
+    assert c.clock_gap_s == pytest.approx(60) and c.delay_range == (-62.0, 10.0)
+    assert len(c.warnings()) == 1 and 'pause or dropout' in c.warnings()[0]
+    c = make(tmp_path, audio_end_utc='2026-06-01T12:01:00Z', ground_temp_c=8)     # before start + duration
+    with pytest.raises(case.CaseError, match='one of the two times is wrong'):
+        c.clock_gap_s
+    assert 'one of the two times is wrong' in c.warnings()[0]
+    with pytest.raises(case.CaseError, match='later than audio_start_utc'):
+        make(tmp_path, audio_end_utc='2026-06-01T11:00:00Z')
+
+
+def test_cli_new_stores_the_end_time_and_warns(tmp_path, capsys):
+    wav(tmp_path / 'rec.wav', seconds=100)
+    cli.main(['new', str(tmp_path / 'c'), '--audio', str(tmp_path / 'rec.wav'), '--start', BASE['audio_start_utc'],
+              '--end', '2026-06-01T12:02:40Z', '--center', '52,5', '--temp', '6'])
+    out = capsys.readouterr().out
+    assert 'warning: the recording is 60 s shorter' in out and 'ground_temp_c' not in out
+    assert case.Case(tmp_path / 'c').s['audio_end_utc'] == '2026-06-01T12:02:40Z'
+
+
+def test_one_aircraft_or_a_temperature_far_from_the_prior_is_weak():
+    r = _result()
+    r['events'] = [{'explained': True, 'icao24': 'aaaaaa'}] * 3 + [{'explained': False}]
+    a = locate.assess(r)
+    assert a['verdict'] == 'weak' and 'one aircraft' in a['flags'][0]['message']
+    r['events'][3] = {'explained': True, 'icao24': 'bbbbbb'}
+    assert locate.assess(r)['verdict'] == 'ok'
+    r['best']['ground_temp_c'], r['settings']['ground_temp_prior_c'] = -15.0, 5.5       # at the lower bound
+    assert locate.assess(r)['verdict'] == 'weak'
+    r['best']['ground_temp_c'] = 16.0                                                   # 10.5 C from the prior
+    assert locate.assess(r)['verdict'] == 'weak'
+    r['best']['ground_temp_c'] = 9.0
+    assert locate.assess(r)['verdict'] == 'ok'

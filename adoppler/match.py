@@ -11,6 +11,8 @@ from scipy.optimize import least_squares
 
 from . import config, geo, physics
 
+TEMP_BOUNDS_C = (-15.0, 40.0)   # range of the refined ground temperature
+
 
 # ---------------------------------------------------------------- observed curves
 
@@ -242,8 +244,8 @@ class Problem:
 
     def refine(self, E0, N0, d0, assoc, fit_temp=True):
         x0 = [E0, N0, d0] + ([self.t_ground_c] if fit_temp else [])
-        lb = [-self.radius * 1.2] * 2 + [self.delta_range[0] - 2] + ([-15] if fit_temp else [])
-        ub = [self.radius * 1.2] * 2 + [self.delta_range[1] + 2] + ([40] if fit_temp else [])
+        lb = [-self.radius * 1.2] * 2 + [self.delta_range[0] - 2] + ([TEMP_BOUNDS_C[0]] if fit_temp else [])
+        ub = [self.radius * 1.2] * 2 + [self.delta_range[1] + 2] + ([TEMP_BOUNDS_C[1]] if fit_temp else [])
         r = least_squares(self.residuals, x0, args=(assoc, fit_temp), loss='cauchy', f_scale=1.0,
                           x_scale=[100, 100, 0.5] + ([2] if fit_temp else []), bounds=(lb, ub), diff_step=1e-4)
         return r

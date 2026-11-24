@@ -26,11 +26,18 @@ def _in_case(p, d):
 def cmd_new(a):
     d = Path(a.case).resolve()
     c = pipeline.new_case(d, _in_case(a.audio, d), a.start, a.center, a.radius, name=a.name, ground_temp_c=a.temp,
+                          audio_end_utc=a.end,
                           terrain=a.terrain, ground_elevation_m=a.elevation,
                           adsb_source='file' if a.adsb_file else None,
                           adsb_file=str(_in_case(a.adsb_file, d)) if a.adsb_file else None)
     info = c.audio_info()
     print(f"created {c.dir / case_mod.CASE_FILE} ({info['duration_s'] / 60:.1f} min of audio)")
+    _warn(c)
+
+
+def _warn(c):
+    for w in c.warnings():
+        print('warning: ' + w)
 
 
 def cmd_synth(a):
@@ -137,6 +144,7 @@ def cmd_validate(a):
 def cmd_status(a):
     c = _case(a)
     print(json.dumps(c.summary(), indent=1))
+    _warn(c)
 
 
 def cmd_serve(a):
@@ -169,6 +177,8 @@ def main(argv=None):
     q = add('new', cmd_new, 'create a case from an audio file')
     q.add_argument('--audio', required=True, help='audio file (WAV, FLAC, OGG, MP3)')
     q.add_argument('--start', required=True, help='UTC time of the first sample, e.g. 2026-06-01T12:00:00Z')
+    q.add_argument('--end', help='UTC time the recording stopped, if known (phone recorders: the creation_time '
+                   'that ffprobe shows); reveals pauses and dropouts')
     q.add_argument('--center', required=True, type=_center, help='search centre LAT,LON (a town, an area)')
     q.add_argument('--radius', type=float, help='search radius in km (default 20)')
     q.add_argument('--temp', type=float, help='ground air temperature in C (default 15)')
@@ -190,7 +200,7 @@ def main(argv=None):
     q.add_argument('--events', nargs='+', help='use only these broadband event IDs (J01, J02, ...)')
     q.add_argument('--classified', action='store_true', help='use only the sounds `adoppler classify` screened as jets')
     q.add_argument('--step', type=float, default=2000, help='coarse search grid spacing in metres (default 2000)')
-    q.add_argument('--timing-slack', type=float, default=5, help='slack of the one clock offset shared by all sounds beyond the clock prior, seconds (default 5)')
+    q.add_argument('--timing-slack', type=float, default=5, help='slack of the clock offset shared by all sounds beyond the clock prior, seconds (default 5)')
     q = add('adsb', cmd_adsb, 'fetch historical ADS-B tracks for the recording')
     q.add_argument('--source', choices=['auto', 'adsb.lol', 'adsb.aero', 'file'])
     q.add_argument('--force', action='store_true', help='fetch again')

@@ -99,6 +99,9 @@ function renderHeader() {
     `starts ${s.audio_start_utc}`,
     `search ${fmt(s.search_radius_km)} km around ${s.search_center.map((x) => fmt(x, 3)).join(', ')}`,
     s.synthetic ? 'synthetic' : null].filter(Boolean).join(' · ');
+  const warn = $('#case-warnings');
+  warn.textContent = (c.warnings || []).map((w) => `Warning: ${w}`).join(' ');
+  warn.classList.toggle('hidden', !(c.warnings || []).length);
   const done = { analyse: st.events, adsb: st.adsb, match: st.match };
   const running = (c.jobs || []).find((j) => j.state === 'running');
   for (const li of document.querySelectorAll('.stages li')) {
@@ -397,6 +400,7 @@ function openSettings(isNew) {
     : state.c.settings;
   f.name.value = isNew ? '' : s.name || '';
   f.audio_start_utc.value = s.audio_start_utc || '';
+  f.audio_end_utc.value = s.audio_end_utc || '';
   f.search_center.value = s.search_center ? s.search_center.join(', ') : '';
   f.search_radius_km.value = s.search_radius_km; f.ground_temp_c.value = s.ground_temp_c;
   f.terrain.value = s.terrain; f.ground_elevation_m.value = s.ground_elevation_m;
@@ -414,8 +418,11 @@ async function saveSettings(ev) {
   const cen = f.search_center.value.split(/[ ,;]+/).filter(Boolean).map(Number);
   if (cen.length !== 2 || cen.some((x) => !isFinite(x))) return fail('Search centre must be "lat, lon" in decimal degrees.');
   const start = f.audio_start_utc.value.trim();
-  if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?(Z|[+-]\d\d:\d\d)$/.test(start)) return fail('Recording start must be ISO 8601 with a time zone, e.g. 2026-06-01T12:00:00Z.');
-  const s = { name: f.name.value.trim(), audio_start_utc: start, search_center: cen,
+  const iso = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?(Z|[+-]\d\d:\d\d)$/;
+  if (!iso.test(start)) return fail('Recording start must be ISO 8601 with a time zone, e.g. 2026-06-01T12:00:00Z.');
+  const end = f.audio_end_utc.value.trim();
+  if (end && !iso.test(end)) return fail('Recording end must be empty or ISO 8601 with a time zone.');
+  const s = { name: f.name.value.trim(), audio_start_utc: start, audio_end_utc: end || null, search_center: cen,
     search_radius_km: +f.search_radius_km.value, ground_temp_c: +f.ground_temp_c.value, terrain: f.terrain.value,
     ground_elevation_m: +f.ground_elevation_m.value, adsb_source: f.adsb_source.value, match: { min_score: +f.min_score.value } };
   const audio = f.audio_file.files[0], adsbFile = f.adsb_file.files[0];
